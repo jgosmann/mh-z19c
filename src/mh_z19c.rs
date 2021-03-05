@@ -1,4 +1,12 @@
-use std::convert::TryInto;
+use core::convert::TryInto;
+use core::future::Future;
+use core::ops::Deref;
+use core::ops::DerefMut;
+use core::pin::Pin;
+use core::task::Context;
+use core::task::Poll;
+use embedded_hal::serial::{Read, Write};
+use nb;
 
 pub mod rpi;
 
@@ -11,6 +19,157 @@ pub trait Uart {
         len: usize,
     ) -> std::result::Result<(), Self::Error>;
     fn write_blocking(&mut self, buffer: &[u8]) -> std::result::Result<(), Self::Error>;
+}
+
+struct WriteAll<'a, W, E>
+where
+    W: Write<u8, Error = E> + Unpin,
+{
+    uart: Option<W>,
+    buf: &'a [u8],
+    bytes_written: usize,
+}
+
+impl<'a, W, E> WriteAll<'a, W, E>
+where
+    W: Write<u8, Error = E> + Unpin,
+{
+    fn new(uart: W, buf: &'a [u8]) -> Self {
+        Self {
+            uart: Some(uart),
+            buf,
+            bytes_written: 0,
+        }
+    }
+}
+
+impl<'a, W, E> Future for WriteAll<'a, W, E>
+where
+    W: Write<u8, Error = E> + Unpin,
+{
+    type Output = std::result::Result<W, E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            let bytes_written = self.buf[self.bytes_written];
+            match self.uart.as_mut().unwrap().write(bytes_written) {
+                Ok(()) => {
+                    self.bytes_written += 1;
+                    if self.bytes_written >= self.buf.len() {
+                        return Poll::Ready(Ok(self.uart.take().unwrap()));
+                    }
+                }
+                Err(nb::Error::WouldBlock) => {
+                    cx.waker().clone().wake(); // FIXME add delay?
+                    return Poll::Pending;
+                }
+                Err(nb::Error::Other(err)) => return Poll::Ready(Err(err)),
+            }
+        }
+    }
+}
+
+struct ReadMultiple<R, E>
+where
+    R: Read<u8, Error = E> + Unpin,
+{
+    uart: Option<R>,
+    buf: Option<Vec<u8>>,
+}
+
+impl<R, E> ReadMultiple<R, E>
+where
+    R: Read<u8, Error = E> + Unpin,
+{
+    fn new(uart: R, read_len: usize) -> Self {
+        Self {
+            uart: Some(uart),
+            buf: Some(Vec::with_capacity(read_len)),
+        }
+    }
+}
+
+impl<'a, R, E> Future for ReadMultiple<R, E>
+where
+    R: Read<u8, Error = E> + Unpin,
+{
+    type Output = std::result::Result<(R, Vec<u8>), E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match self.uart.as_mut().unwrap().read() {
+                Ok(c) => {
+                    self.buf.as_mut().unwrap().push(c);
+                    if self.buf.as_ref().unwrap().len() >= self.buf.as_ref().unwrap().capacity() {
+                        return Poll::Ready(Ok((
+                            self.uart.take().unwrap(),
+                            self.buf.take().unwrap(),
+                        )));
+                    }
+                }
+                Err(nb::Error::WouldBlock) => {
+                    cx.waker().clone().wake(); // FIXME add delay?
+                    return Poll::Pending;
+                }
+                Err(nb::Error::Other(err)) => return Poll::Ready(Err(err)),
+            }
+        }
+    }
+}
+
+enum WriteAndReadResponseState<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+{
+    Write(Pin<Box<WriteAll<'a, U, E>>>),
+    Read(Pin<Box<ReadMultiple<U, E>>>),
+}
+
+struct WriteAndReadResponse<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+{
+    state: WriteAndReadResponseState<'a, U, E>,
+}
+
+impl<'a, U, E> WriteAndReadResponse<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+{
+    fn new(uart: U, buf: &'a [u8]) -> Self {
+        Self {
+            state: WriteAndReadResponseState::Write(Box::pin(WriteAll::new(uart, buf))),
+        }
+    }
+}
+
+impl<'a, U, E> Future for WriteAndReadResponse<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+{
+    type Output = std::result::Result<(U, Vec<u8>), E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &mut self.state {
+            WriteAndReadResponseState::Write(future) => {
+                if let Poll::Ready(val) = future.as_mut().poll(cx) {
+                    match val {
+                        Ok(uart) => {
+                            self.state = WriteAndReadResponseState::Read(Box::pin(
+                                ReadMultiple::new(uart, 9),
+                            ));
+                            cx.waker().clone().wake();
+                        }
+                        Err(err) => return Poll::Ready(Err(err)),
+                    }
+                }
+            }
+            WriteAndReadResponseState::Read(future) => {
+                return future.as_mut().poll(cx);
+            }
+        }
+        return Poll::Pending;
+    }
 }
 
 pub struct MhZ19C<T: Uart> {
