@@ -5,6 +5,7 @@ name = "co2-metrics-exporter"
 version = "0.1.0"
 dependencies = [
  "embedded-hal",
+ "lazy_static",
  "nb 1.0.0",
  "rppal",
 ]

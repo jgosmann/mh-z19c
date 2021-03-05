@@ -1,10 +1,4 @@
 use core::convert::TryInto;
-use core::future::Future;
-use core::ops::Deref;
-use core::ops::DerefMut;
-use core::pin::Pin;
-use core::task::Context;
-use core::task::Poll;
 use embedded_hal::serial::{Read, Write};
 use nb;
 
@@ -23,7 +17,7 @@ pub trait Uart {
 
 struct WriteAll<'a, W, E>
 where
-    W: Write<u8, Error = E> + Unpin,
+    W: Write<u8, Error = E>,
 {
     uart: Option<W>,
     buf: &'a [u8],
@@ -32,7 +26,7 @@ where
 
 impl<'a, W, E> WriteAll<'a, W, E>
 where
-    W: Write<u8, Error = E> + Unpin,
+    W: Write<u8, Error = E>,
 {
     fn new(uart: W, buf: &'a [u8]) -> Self {
         Self {
@@ -43,27 +37,22 @@ where
     }
 }
 
-impl<'a, W, E> Future for WriteAll<'a, W, E>
+impl<'a, W, E> WriteAll<'a, W, E>
 where
-    W: Write<u8, Error = E> + Unpin,
+    W: Write<u8, Error = E>,
 {
-    type Output = std::result::Result<W, E>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(&mut self) -> nb::Result<W, E> {
         loop {
+            let uart = self.uart.as_mut().unwrap();
             let bytes_written = self.buf[self.bytes_written];
-            match self.uart.as_mut().unwrap().write(bytes_written) {
+            match uart.write(bytes_written) {
                 Ok(()) => {
                     self.bytes_written += 1;
                     if self.bytes_written >= self.buf.len() {
-                        return Poll::Ready(Ok(self.uart.take().unwrap()));
+                        return Ok(self.uart.take().unwrap());
                     }
                 }
-                Err(nb::Error::WouldBlock) => {
-                    cx.waker().clone().wake(); // FIXME add delay?
-                    return Poll::Pending;
-                }
-                Err(nb::Error::Other(err)) => return Poll::Ready(Err(err)),
+                Err(err) => return Err(err),
             }
         }
     }
@@ -71,7 +60,7 @@ where
 
 struct ReadMultiple<R, E>
 where
-    R: Read<u8, Error = E> + Unpin,
+    R: Read<u8, Error = E>,
 {
     uart: Option<R>,
     buf: Option<Vec<u8>>,
@@ -79,7 +68,7 @@ where
 
 impl<R, E> ReadMultiple<R, E>
 where
-    R: Read<u8, Error = E> + Unpin,
+    R: Read<u8, Error = E>,
 {
     fn new(uart: R, read_len: usize) -> Self {
         Self {
@@ -89,29 +78,22 @@ where
     }
 }
 
-impl<'a, R, E> Future for ReadMultiple<R, E>
+impl<'a, R, E> ReadMultiple<R, E>
 where
-    R: Read<u8, Error = E> + Unpin,
+    R: Read<u8, Error = E>,
 {
-    type Output = std::result::Result<(R, Vec<u8>), E>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(&mut self) -> nb::Result<(R, Vec<u8>), E> {
         loop {
-            match self.uart.as_mut().unwrap().read() {
+            let uart = self.uart.as_mut().unwrap();
+            let buf = self.buf.as_mut().unwrap();
+            match uart.read() {
                 Ok(c) => {
-                    self.buf.as_mut().unwrap().push(c);
-                    if self.buf.as_ref().unwrap().len() >= self.buf.as_ref().unwrap().capacity() {
-                        return Poll::Ready(Ok((
-                            self.uart.take().unwrap(),
-                            self.buf.take().unwrap(),
-                        )));
+                    buf.push(c);
+                    if buf.len() >= buf.capacity() {
+                        return Ok((self.uart.take().unwrap(), self.buf.take().unwrap()));
                     }
                 }
-                Err(nb::Error::WouldBlock) => {
-                    cx.waker().clone().wake(); // FIXME add delay?
-                    return Poll::Pending;
-                }
-                Err(nb::Error::Other(err)) => return Poll::Ready(Err(err)),
+                Err(err) => return Err(err),
             }
         }
     }
@@ -119,93 +101,119 @@ where
 
 enum WriteAndReadResponseState<'a, U, E>
 where
-    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
-    Write(Pin<Box<WriteAll<'a, U, E>>>),
-    Read(Pin<Box<ReadMultiple<U, E>>>),
+    Write(WriteAll<'a, U, E>),
+    Read(ReadMultiple<U, E>),
 }
 
 struct WriteAndReadResponse<'a, U, E>
 where
-    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
     state: WriteAndReadResponseState<'a, U, E>,
 }
 
 impl<'a, U, E> WriteAndReadResponse<'a, U, E>
 where
-    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
     fn new(uart: U, buf: &'a [u8]) -> Self {
         Self {
-            state: WriteAndReadResponseState::Write(Box::pin(WriteAll::new(uart, buf))),
+            state: WriteAndReadResponseState::Write(WriteAll::new(uart, buf)),
         }
     }
 }
 
-impl<'a, U, E> Future for WriteAndReadResponse<'a, U, E>
+impl<'a, U, E> WriteAndReadResponse<'a, U, E>
 where
-    U: Read<u8, Error = E> + Write<u8, Error = E> + Unpin,
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
-    type Output = std::result::Result<(U, Vec<u8>), E>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(&mut self) -> nb::Result<(U, Vec<u8>), E> {
         match &mut self.state {
-            WriteAndReadResponseState::Write(future) => {
-                if let Poll::Ready(val) = future.as_mut().poll(cx) {
-                    match val {
-                        Ok(uart) => {
-                            self.state = WriteAndReadResponseState::Read(Box::pin(
-                                ReadMultiple::new(uart, 9),
-                            ));
-                            cx.waker().clone().wake();
-                        }
-                        Err(err) => return Poll::Ready(Err(err)),
-                    }
+            WriteAndReadResponseState::Write(future) => match future.poll() {
+                Ok(uart) => {
+                    self.state = WriteAndReadResponseState::Read(ReadMultiple::new(uart, 9));
+                    Err(nb::Error::WouldBlock)
                 }
-            }
-            WriteAndReadResponseState::Read(future) => {
-                return future.as_mut().poll(cx);
-            }
+                Err(err) => Err(err),
+            },
+            WriteAndReadResponseState::Read(future) => future.poll(),
         }
-        return Poll::Pending;
     }
 }
 
-pub struct MhZ19C<T: Uart> {
-    uart: T,
+enum MhZ19CState<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+{
+    Idle(Option<U>),
+    ReadCo2(WriteAndReadResponse<'a, U, E>),
 }
 
-impl<T: Uart> MhZ19C<T> {
-    pub fn new(uart: T) -> Self {
-        Self { uart }
+lazy_static! {
+    static ref READ_CO2: [u8; 9] = {
+        let mut buf = [0x00; 9];
+        frame_command(Command::ReadCo2, &mut buf);
+        buf
+    };
+}
+
+fn frame_command(command: Command, buf: &mut [u8; 9]) {
+    buf[0] = 0xff;
+    buf[1] = 0x01;
+    command.serialize(&mut buf[2..8]);
+    buf[8] = checksum(&buf[1..8]);
+}
+
+fn checksum(buf: &[u8]) -> u8 {
+    buf.iter()
+        .fold(0x00, |acc: u8, &x: &u8| acc.overflowing_sub(x).0)
+}
+
+pub struct MhZ19C<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+{
+    state: MhZ19CState<'a, U, E>,
+}
+
+impl<'a, U, E> MhZ19C<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+{
+    pub fn new(uart: U) -> Self {
+        Self {
+            state: MhZ19CState::Idle(Some(uart)),
+        }
     }
 
-    pub fn read_co2_ppm(&mut self) -> Result<u16, T::Error> {
-        let mut buf = [0u8; 9];
-        Self::frame_command(Command::ReadCo2, &mut buf);
-        self.uart.write_blocking(&buf).map_err(Error::UartError)?;
-        self.uart
-            .read_blocking(&mut buf, 9)
-            .map_err(Error::UartError)?;
-        let buf = buf;
-        let data = Self::unpack_return_frame(Command::ReadCo2, &buf)?;
-        Ok(u16::from_be_bytes(data[..2].try_into().unwrap()))
+    pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
+        if let MhZ19CState::Idle(uart) = &mut self.state {
+            self.state =
+                MhZ19CState::ReadCo2(WriteAndReadResponse::new(uart.take().unwrap(), &*READ_CO2));
+        }
+        if let MhZ19CState::ReadCo2(future) = &mut self.state {
+            match future.poll() {
+                Ok((uart, buf)) => {
+                    self.state = MhZ19CState::Idle(Some(uart));
+                    let data = Self::unpack_return_frame(Command::ReadCo2, &buf)
+                        .map_err(nb::Error::Other)?;
+                    Ok(u16::from_be_bytes(data[..2].try_into().unwrap()))
+                }
+                Err(err) => Err(err.map(Error::UartError)),
+            }
+        } else {
+            Err(nb::Error::WouldBlock)
+        }
     }
 
-    fn frame_command(command: Command, buf: &mut [u8; 9]) {
-        buf[0] = 0xff;
-        buf[1] = 0x01;
-        command.serialize(&mut buf[2..8]);
-        buf[8] = Self::checksum(&buf[1..8]);
-    }
-
-    fn unpack_return_frame<'a>(command: Command, buf: &'a [u8; 9]) -> Result<&'a [u8], T::Error> {
+    fn unpack_return_frame<'b>(command: Command, buf: &'b [u8]) -> Result<&'b [u8], E> {
         if buf[0] != 0xff {
             return Err(Error::StartByteExpected { got: buf[0] });
         }
-        if Self::checksum(&buf[1..8]) != buf[8] {
-            println!("buf {:x?} {:x?}", Self::checksum(&buf[1..8]), buf[8]);
+        if checksum(&buf[1..8]) != buf[8] {
+            println!("buf {:x?} {:x?}", checksum(&buf[1..8]), buf[8]);
             return Err(Error::InvalidChecksum);
         }
         if buf[1] != command.op_code() {
@@ -215,11 +223,6 @@ impl<T: Uart> MhZ19C<T> {
             });
         }
         return Ok(&buf[2..8]);
-    }
-
-    fn checksum(buf: &[u8]) -> u8 {
-        buf.iter()
-            .fold(0x00, |acc: u8, &x: &u8| acc.overflowing_sub(x).0)
     }
 }
 
