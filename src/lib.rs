@@ -1,8 +1,11 @@
 #[macro_use]
 extern crate lazy_static;
 
+use crate::command::Command;
 use core::convert::TryInto;
 use embedded_hal::serial::{Read, Write};
+
+pub mod command;
 
 struct WriteAll<'a, W, E>
 where
@@ -141,18 +144,14 @@ where
 }
 
 lazy_static! {
-    static ref READ_CO2: [u8; 9] = {
-        let mut buf = [0x00; 9];
-        frame_command(Command::ReadCo2, &mut buf);
-        buf
-    };
+    static ref READ_CO2: [u8; 9] = frame_command(Command::ReadCo2);
 }
 
-fn frame_command(command: Command, buf: &mut [u8; 9]) {
-    buf[0] = 0xff;
-    buf[1] = 0x01;
-    command.serialize(&mut buf[2..8]);
+fn frame_command(command: Command) -> [u8; 9] {
+    let mut buf = [0xff, 0x01, 0, 0, 0, 0, 0, 0, 0];
+    buf[2..8].copy_from_slice(&command.serialize());
     buf[8] = checksum(&buf[1..8]);
+    buf
 }
 
 fn checksum(buf: &[u8]) -> u8 {
@@ -212,32 +211,6 @@ where
             });
         }
         Ok(&buf[2..8])
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Command {
-    ReadCo2,
-    SetSelfCalibrate(bool),
-}
-
-impl Command {
-    fn op_code(&self) -> u8 {
-        match self {
-            Self::ReadCo2 => 0x86,
-            Self::SetSelfCalibrate(_) => 0x79,
-        }
-    }
-    fn serialize_args(&self, buf: &mut [u8]) {
-        buf.copy_from_slice(&match self {
-            Self::SetSelfCalibrate(true) => [0xa0, 0x00, 0x00, 0x00, 0x00],
-            Self::SetSelfCalibrate(false) => [0x00; 5],
-            _ => [0x00; 5],
-        })
-    }
-    fn serialize(&self, buf: &mut [u8]) {
-        buf[0] = self.op_code();
-        self.serialize_args(&mut buf[1..]);
     }
 }
 
