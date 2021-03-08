@@ -283,99 +283,112 @@ type Result<T, U> = std::result::Result<T, Error<U>>;
 mod tests {
     use super::*;
 
+    use nb::block;
+    use std::collections::VecDeque;
+
     struct MockUart {
+        response: VecDeque<u8>,
+        write_buffer: Vec<u8>,
         return_start_byte: u8,
         return_checksum: u8,
-        uart_error: bool,
     }
 
     impl Default for MockUart {
         fn default() -> Self {
             Self {
+                response: VecDeque::new(),
+                write_buffer: vec![],
                 return_start_byte: 0xff,
                 return_checksum: 0x43,
-                uart_error: false,
             }
         }
     }
 
-    impl Uart for MockUart {
+    impl MockUart {
+        fn with_read_co2_response(mut self) -> Self {
+            self.response = VecDeque::from(vec![
+                self.return_start_byte,
+                0x86,
+                0x03,
+                0x20,
+                0x12,
+                0x34,
+                0x56,
+                0x78,
+                self.return_checksum,
+            ]);
+            self
+        }
+        fn with_return_start_byte(mut self, return_start_byte: u8) -> Self {
+            self.return_start_byte = return_start_byte;
+            self
+        }
+        fn with_return_checksum(mut self, return_checksum: u8) -> Self {
+            self.return_checksum = return_checksum;
+            self
+        }
+    }
+
+    impl Read<u8> for MockUart {
         type Error = String;
 
-        fn read_blocking(
-            &mut self,
-            buffer: &mut [u8],
-            len: usize,
-        ) -> std::result::Result<(), Self::Error> {
-            if self.uart_error {
-                Err("Mocked UART error.".into())
-            } else if len > 9 {
-                Err("Tried to read more than 9 bytes.".into())
-            } else {
-                buffer.copy_from_slice(
-                    &[
-                        self.return_start_byte,
-                        0x86,
-                        0x03,
-                        0x20,
-                        0x12,
-                        0x34,
-                        0x56,
-                        0x78,
-                        self.return_checksum,
-                    ][..len],
-                );
-                Ok(())
+        fn read(&mut self) -> nb::Result<u8, Self::Error> {
+            match self.response.pop_front() {
+                Some(c) => Ok(c),
+                None => Err(nb::Error::Other("No more data.".into())),
             }
         }
+    }
 
-        fn write_blocking(&mut self, buffer: &[u8]) -> std::result::Result<(), Self::Error> {
-            if self.uart_error {
-                Err("Mocked UART error.".into())
-            } else if buffer == [0xff, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79] {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Did not write expected read command, but {:x?}.",
-                    buffer
-                ))
-            }
+    impl Write<u8> for MockUart {
+        type Error = String;
+
+        fn write(&mut self, c: u8) -> nb::Result<(), Self::Error> {
+            self.write_buffer.push(c);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> nb::Result<(), Self::Error> {
+            Ok(())
         }
     }
 
     #[test]
     fn test_read_co2() {
-        let mut co2sensor = MhZ19C::new(MockUart::default());
-        assert_eq!(co2sensor.read_co2_ppm(), Ok(800));
+        let mut co2sensor = MhZ19C::new(MockUart::default().with_read_co2_response());
+        assert_eq!(block!(co2sensor.read_co2_ppm()), Ok(800));
     }
 
     #[test]
     fn test_read_co2_uart_error() {
-        let mut uart = MockUart::default();
-        uart.uart_error = true;
-        let mut co2sensor = MhZ19C::new(uart);
+        let mut co2sensor = MhZ19C::new(MockUart::default());
         assert_eq!(
-            co2sensor.read_co2_ppm(),
-            Err(Error::UartError("Mocked UART error.".into()))
+            block!(co2sensor.read_co2_ppm()),
+            Err(Error::UartError("No more data.".into()))
         );
     }
 
     #[test]
     fn test_read_co2_invalid_start_byte() {
-        let mut uart = MockUart::default();
-        uart.return_start_byte = 0x00;
+        let uart = MockUart::default()
+            .with_return_start_byte(0x00)
+            .with_read_co2_response();
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
-            co2sensor.read_co2_ppm(),
+            block!(co2sensor.read_co2_ppm()),
             Err(Error::StartByteExpected { got: 0x00 })
         );
     }
 
     #[test]
     fn test_read_co2_invalid_checksum() {
-        let mut uart = MockUart::default();
-        uart.return_checksum = 0x00;
+        let uart = MockUart::default()
+            .with_return_checksum(0x00)
+            .with_read_co2_response();
         let mut co2sensor = MhZ19C::new(uart);
-        assert_eq!(co2sensor.read_co2_ppm(), Err(Error::InvalidChecksum));
+        assert_eq!(
+            block!(co2sensor.read_co2_ppm()),
+            Err(Error::InvalidChecksum)
+        );
     }
 }
