@@ -122,9 +122,7 @@ where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
     B: AsMut<[u8]>,
 {
-    state: WriteAndReadResponseState<'a, U, E, B>,
-    read_buf: Option<B>,
-    response_len: usize,
+    state: Option<WriteAndReadResponseState<'a, U, E, B>>,
 }
 
 enum WriteAndReadResponseState<'a, U, E, B>
@@ -132,8 +130,45 @@ where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
     B: AsMut<[u8]>,
 {
-    Write(WriteAll<'a, U, E>),
-    Read(ReadMultiple<U, E, B>),
+    Write {
+        future: WriteAll<'a, U, E>,
+        read_buf: B,
+        response_len: usize,
+    },
+    Read {
+        future: ReadMultiple<U, E, B>,
+    },
+    Completed {
+        uart: U,
+        read_buf: B,
+    },
+}
+
+impl<'a, U, E, B> WriteAndReadResponseState<'a, U, E, B>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+    B: AsMut<[u8]>,
+{
+    fn advance(self) -> nb::Result<Self, E> {
+        use WriteAndReadResponseState::*;
+        match self {
+            Write {
+                mut future,
+                read_buf,
+                response_len,
+            } => {
+                let uart = future.poll()?;
+                Ok(Read {
+                    future: ReadMultiple::new(uart, read_buf, response_len),
+                })
+            }
+            Read { mut future } => {
+                let (uart, read_buf) = future.poll()?;
+                Ok(Completed { uart, read_buf })
+            }
+            other => Ok(other),
+        }
+    }
 }
 
 impl<'a, U, E, B> WriteAndReadResponse<'a, U, E, B>
@@ -148,9 +183,11 @@ where
     /// read from [`Self::poll`] on completion.
     pub fn new(uart: U, write_buf: &'a [u8], read_buf: B, response_len: usize) -> Self {
         Self {
-            state: WriteAndReadResponseState::Write(WriteAll::new(uart, write_buf)),
-            read_buf: Some(read_buf),
-            response_len,
+            state: Some(WriteAndReadResponseState::Write {
+                future: WriteAll::new(uart, write_buf),
+                read_buf,
+                response_len,
+            }),
         }
     }
 }
@@ -161,19 +198,13 @@ where
     B: AsMut<[u8]>,
 {
     fn poll(&mut self) -> nb::Result<(U, B), E> {
-        match &mut self.state {
-            WriteAndReadResponseState::Write(future) => match future.poll() {
-                Ok(uart) => {
-                    self.state = WriteAndReadResponseState::Read(ReadMultiple::new(
-                        uart,
-                        self.read_buf.take().unwrap(),
-                        self.response_len,
-                    ));
-                    Err(nb::Error::WouldBlock)
-                }
-                Err(err) => Err(err),
-            },
-            WriteAndReadResponseState::Read(future) => future.poll(),
+        loop {
+            use WriteAndReadResponseState::*;
+            let new_state = self.state.take().unwrap().advance()?;
+            if let Completed { uart, read_buf } = new_state {
+                return Ok((uart, read_buf));
+            }
+            self.state = Some(new_state);
         }
     }
 }
