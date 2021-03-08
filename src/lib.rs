@@ -13,8 +13,8 @@ enum MhZ19CState<'a, U, E>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
-    Idle(Option<U>),
-    ReadCo2(WriteAndReadResponse<'a, U, E>),
+    Idle(Option<(U, [u8; 9])>),
+    ReadCo2(WriteAndReadResponse<'a, U, E, [u8; 9]>),
 }
 
 lazy_static! {
@@ -46,24 +46,21 @@ where
 {
     pub fn new(uart: U) -> Self {
         Self {
-            state: MhZ19CState::Idle(Some(uart)),
+            state: MhZ19CState::Idle(Some((uart, [0u8; 9]))),
         }
     }
 
     pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
         if let MhZ19CState::Idle(uart) = &mut self.state {
-            self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(
-                uart.take().unwrap(),
-                &*READ_CO2,
-                9,
-            ));
+            let (uart, buf) = uart.take().unwrap();
+            self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(uart, &*READ_CO2, buf, 9));
         }
         if let MhZ19CState::ReadCo2(future) = &mut self.state {
             match future.poll() {
                 Ok((uart, buf)) => {
-                    self.state = MhZ19CState::Idle(Some(uart));
                     let data = Self::unpack_return_frame(Command::ReadCo2, &buf)
                         .map_err(nb::Error::Other)?;
+                    self.state = MhZ19CState::Idle(Some((uart, buf)));
                     Ok(u16::from_be_bytes(data[..2].try_into().unwrap()))
                 }
                 Err(err) => Err(err.map(Error::UartError)),
