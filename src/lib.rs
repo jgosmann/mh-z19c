@@ -5,17 +5,6 @@ use core::convert::TryInto;
 use embedded_hal::serial::{Read, Write};
 use nb;
 
-pub trait Uart {
-    type Error;
-
-    fn read_blocking(
-        &mut self,
-        buffer: &mut [u8],
-        len: usize,
-    ) -> std::result::Result<(), Self::Error>;
-    fn write_blocking(&mut self, buffer: &[u8]) -> std::result::Result<(), Self::Error>;
-}
-
 struct WriteAll<'a, W, E>
 where
     W: Write<u8, Error = E>,
