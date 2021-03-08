@@ -3,7 +3,6 @@ extern crate lazy_static;
 
 use core::convert::TryInto;
 use embedded_hal::serial::{Read, Write};
-use nb;
 
 struct WriteAll<'a, W, E>
 where
@@ -212,7 +211,7 @@ where
                 got: buf[1],
             });
         }
-        return Ok(&buf[2..8]);
+        Ok(&buf[2..8])
     }
 }
 
