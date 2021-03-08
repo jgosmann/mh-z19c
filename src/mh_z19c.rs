@@ -2,8 +2,6 @@ use core::convert::TryInto;
 use embedded_hal::serial::{Read, Write};
 use nb;
 
-pub mod rpi;
-
 pub trait Uart {
     type Error;
 
