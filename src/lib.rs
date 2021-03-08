@@ -2,138 +2,12 @@
 extern crate lazy_static;
 
 use crate::command::Command;
+use crate::nb_comm::{NbFuture, WriteAndReadResponse};
 use core::convert::TryInto;
 use embedded_hal::serial::{Read, Write};
 
 pub mod command;
-
-struct WriteAll<'a, W, E>
-where
-    W: Write<u8, Error = E>,
-{
-    uart: Option<W>,
-    buf: &'a [u8],
-    bytes_written: usize,
-}
-
-impl<'a, W, E> WriteAll<'a, W, E>
-where
-    W: Write<u8, Error = E>,
-{
-    fn new(uart: W, buf: &'a [u8]) -> Self {
-        Self {
-            uart: Some(uart),
-            buf,
-            bytes_written: 0,
-        }
-    }
-}
-
-impl<'a, W, E> WriteAll<'a, W, E>
-where
-    W: Write<u8, Error = E>,
-{
-    fn poll(&mut self) -> nb::Result<W, E> {
-        loop {
-            let uart = self.uart.as_mut().unwrap();
-            let bytes_written = self.buf[self.bytes_written];
-            match uart.write(bytes_written) {
-                Ok(()) => {
-                    self.bytes_written += 1;
-                    if self.bytes_written >= self.buf.len() {
-                        return Ok(self.uart.take().unwrap());
-                    }
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    }
-}
-
-struct ReadMultiple<R, E>
-where
-    R: Read<u8, Error = E>,
-{
-    uart: Option<R>,
-    buf: Option<Vec<u8>>,
-}
-
-impl<R, E> ReadMultiple<R, E>
-where
-    R: Read<u8, Error = E>,
-{
-    fn new(uart: R, read_len: usize) -> Self {
-        Self {
-            uart: Some(uart),
-            buf: Some(Vec::with_capacity(read_len)),
-        }
-    }
-}
-
-impl<'a, R, E> ReadMultiple<R, E>
-where
-    R: Read<u8, Error = E>,
-{
-    fn poll(&mut self) -> nb::Result<(R, Vec<u8>), E> {
-        loop {
-            let uart = self.uart.as_mut().unwrap();
-            let buf = self.buf.as_mut().unwrap();
-            match uart.read() {
-                Ok(c) => {
-                    buf.push(c);
-                    if buf.len() >= buf.capacity() {
-                        return Ok((self.uart.take().unwrap(), self.buf.take().unwrap()));
-                    }
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    }
-}
-
-enum WriteAndReadResponseState<'a, U, E>
-where
-    U: Read<u8, Error = E> + Write<u8, Error = E>,
-{
-    Write(WriteAll<'a, U, E>),
-    Read(ReadMultiple<U, E>),
-}
-
-struct WriteAndReadResponse<'a, U, E>
-where
-    U: Read<u8, Error = E> + Write<u8, Error = E>,
-{
-    state: WriteAndReadResponseState<'a, U, E>,
-}
-
-impl<'a, U, E> WriteAndReadResponse<'a, U, E>
-where
-    U: Read<u8, Error = E> + Write<u8, Error = E>,
-{
-    fn new(uart: U, buf: &'a [u8]) -> Self {
-        Self {
-            state: WriteAndReadResponseState::Write(WriteAll::new(uart, buf)),
-        }
-    }
-}
-
-impl<'a, U, E> WriteAndReadResponse<'a, U, E>
-where
-    U: Read<u8, Error = E> + Write<u8, Error = E>,
-{
-    fn poll(&mut self) -> nb::Result<(U, Vec<u8>), E> {
-        match &mut self.state {
-            WriteAndReadResponseState::Write(future) => match future.poll() {
-                Ok(uart) => {
-                    self.state = WriteAndReadResponseState::Read(ReadMultiple::new(uart, 9));
-                    Err(nb::Error::WouldBlock)
-                }
-                Err(err) => Err(err),
-            },
-            WriteAndReadResponseState::Read(future) => future.poll(),
-        }
-    }
-}
+mod nb_comm;
 
 enum MhZ19CState<'a, U, E>
 where
@@ -178,8 +52,11 @@ where
 
     pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
         if let MhZ19CState::Idle(uart) = &mut self.state {
-            self.state =
-                MhZ19CState::ReadCo2(WriteAndReadResponse::new(uart.take().unwrap(), &*READ_CO2));
+            self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(
+                uart.take().unwrap(),
+                &*READ_CO2,
+                9,
+            ));
         }
         if let MhZ19CState::ReadCo2(future) = &mut self.state {
             match future.poll() {
