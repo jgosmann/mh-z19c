@@ -7,6 +7,7 @@ use crate::command::Command;
 use crate::frame::Frame;
 use crate::nb_comm::{NbFuture, WriteAndReadResponse};
 use core::convert::TryInto;
+use core::fmt::{self, Display};
 use embedded_hal::serial::{Read, Write};
 
 pub mod command;
@@ -64,15 +65,15 @@ where
         }
     }
 
-    fn unpack_return_frame<'b>(command: Command, frame: &'b Frame) -> Result<&'b [u8], E> {
+    fn unpack_return_frame(command: Command, frame: &Frame) -> Result<&[u8], Error<E>> {
         frame.validate().map_err(Error::FrameError)?;
         if !frame.is_response() {
             Err(Error::NotAResponse)
         } else if frame.op_code() != command.op_code() {
-            return Err(Error::OpCodeMismatch {
+            Err(Error::OpCodeMismatch {
                 expected: command.op_code(),
                 got: frame.op_code(),
-            });
+            })
         } else {
             Ok(frame.data())
         }
@@ -87,8 +88,8 @@ pub enum Error<T> {
     UartError(T),
 }
 
-impl<T: core::fmt::Display> core::fmt::Display for Error<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<T: Display> Display for Error<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FrameError(err) => write!(f, "Frame error: {}", err),
             Self::NotAResponse => write!(f, "Expected response, but got command."),
@@ -101,8 +102,6 @@ impl<T: core::fmt::Display> core::fmt::Display for Error<T> {
         }
     }
 }
-
-type Result<T, U> = core::result::Result<T, Error<U>>;
 
 #[cfg(test)]
 #[macro_use]
