@@ -4,11 +4,13 @@
 extern crate lazy_static;
 
 use crate::command::Command;
+use crate::frame::Frame;
 use crate::nb_comm::{NbFuture, WriteAndReadResponse};
 use core::convert::TryInto;
 use embedded_hal::serial::{Read, Write};
 
 pub mod command;
+pub mod frame;
 mod nb_comm;
 
 enum MhZ19CState<'a, U, E>
@@ -20,19 +22,7 @@ where
 }
 
 lazy_static! {
-    static ref READ_CO2: [u8; 9] = frame_command(Command::ReadCo2);
-}
-
-fn frame_command(command: Command) -> [u8; 9] {
-    let mut buf = [0xff, 0x01, 0, 0, 0, 0, 0, 0, 0];
-    buf[2..8].copy_from_slice(&command.serialize());
-    buf[8] = checksum(&buf[1..8]);
-    buf
-}
-
-fn checksum(buf: &[u8]) -> u8 {
-    buf.iter()
-        .fold(0x00, |acc: u8, &x: &u8| acc.overflowing_sub(x).0)
+    static ref READ_CO2: Frame = Command::ReadCo2.into();
 }
 
 pub struct MhZ19C<'a, U, E>
@@ -55,12 +45,14 @@ where
     pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
         if let MhZ19CState::Idle(uart) = &mut self.state {
             let (uart, buf) = uart.take().unwrap();
-            self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(uart, &*READ_CO2, buf, 9));
+            self.state =
+                MhZ19CState::ReadCo2(WriteAndReadResponse::new(uart, &*READ_CO2.as_ref(), buf, 9));
         }
         if let MhZ19CState::ReadCo2(future) = &mut self.state {
             match future.poll() {
                 Ok((uart, buf)) => {
-                    let data = Self::unpack_return_frame(Command::ReadCo2, &buf)
+                    let frame = Frame::new(buf);
+                    let data = Self::unpack_return_frame(Command::ReadCo2, &frame)
                         .map_err(nb::Error::Other)?;
                     self.state = MhZ19CState::Idle(Some((uart, buf)));
                     Ok(u16::from_be_bytes(data[..2].try_into().unwrap()))
@@ -72,43 +64,39 @@ where
         }
     }
 
-    fn unpack_return_frame<'b>(command: Command, buf: &'b [u8]) -> Result<&'b [u8], E> {
-        if buf[0] != 0xff {
-            return Err(Error::StartByteExpected { got: buf[0] });
-        }
-        if checksum(&buf[1..8]) != buf[8] {
-            return Err(Error::InvalidChecksum);
-        }
-        if buf[1] != command.op_code() {
+    fn unpack_return_frame<'b>(command: Command, frame: &'b Frame) -> Result<&'b [u8], E> {
+        frame.validate().map_err(Error::FrameError)?;
+        if !frame.is_response() {
+            Err(Error::NotAResponse)
+        } else if frame.op_code() != command.op_code() {
             return Err(Error::OpCodeMismatch {
                 expected: command.op_code(),
-                got: buf[1],
+                got: frame.op_code(),
             });
+        } else {
+            Ok(frame.data())
         }
-        Ok(&buf[2..8])
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error<T> {
-    StartByteExpected { got: u8 },
+    FrameError(frame::Error),
+    NotAResponse,
     OpCodeMismatch { expected: u8, got: u8 },
-    InvalidChecksum,
     UartError(T),
 }
 
 impl<T: core::fmt::Display> core::fmt::Display for Error<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::StartByteExpected { got } => {
-                write!(f, "Expected start byte 0xff, but got 0x{:x}.", got)
-            }
+            Self::FrameError(err) => write!(f, "Frame error: {}", err),
+            Self::NotAResponse => write!(f, "Expected response, but got command."),
             Self::OpCodeMismatch { expected, got } => write!(
                 f,
                 "Expected response for op code 0x{:x}, but got op code 0x{:x}.",
                 expected, got
             ),
-            Self::InvalidChecksum => write!(f, "Checksum mismatch."),
             Self::UartError(err) => write!(f, "UART communication error: {}", err),
         }
     }
@@ -219,7 +207,7 @@ mod tests {
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
-            Err(Error::StartByteExpected { got: 0x00 })
+            Err(Error::FrameError(frame::Error::InvalidStartByte(0x00)))
         );
     }
 
@@ -231,7 +219,7 @@ mod tests {
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
-            Err(Error::InvalidChecksum)
+            Err(Error::FrameError(frame::Error::InvalidChecksum))
         );
     }
 }
