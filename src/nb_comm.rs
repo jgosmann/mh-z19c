@@ -265,7 +265,10 @@ where
 mod tests {
     use super::*;
     use nb::block;
+    use std::boxed::Box;
     use std::collections::VecDeque;
+    use std::string::String;
+    use std::vec::Vec;
 
     #[derive(Debug)]
     struct SerialMock {

@@ -1,3 +1,5 @@
+#![no_std]
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -75,7 +77,6 @@ where
             return Err(Error::StartByteExpected { got: buf[0] });
         }
         if checksum(&buf[1..8]) != buf[8] {
-            println!("buf {:x?} {:x?}", checksum(&buf[1..8]), buf[8]);
             return Err(Error::InvalidChecksum);
         }
         if buf[1] != command.op_code() {
@@ -96,8 +97,8 @@ pub enum Error<T> {
     UartError(T),
 }
 
-impl<T: std::fmt::Display> std::fmt::Display for Error<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: core::fmt::Display> core::fmt::Display for Error<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::StartByteExpected { got } => {
                 write!(f, "Expected start byte 0xff, but got 0x{:x}.", got)
@@ -113,9 +114,11 @@ impl<T: std::fmt::Display> std::fmt::Display for Error<T> {
     }
 }
 
-impl<T: std::fmt::Debug + std::fmt::Display> std::error::Error for Error<T> {}
+type Result<T, U> = core::result::Result<T, Error<U>>;
 
-type Result<T, U> = std::result::Result<T, Error<U>>;
+#[cfg(test)]
+#[macro_use]
+extern crate std;
 
 #[cfg(test)]
 mod tests {
@@ -123,6 +126,8 @@ mod tests {
 
     use nb::block;
     use std::collections::VecDeque;
+    use std::string::String;
+    use std::vec::Vec;
 
     struct MockUart {
         response: VecDeque<u8>,
