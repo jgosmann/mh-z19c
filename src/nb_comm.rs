@@ -149,6 +149,11 @@ where
         read_buf: B,
         response_len: usize,
     },
+    Flush {
+        uart: U,
+        read_buf: B,
+        response_len: usize,
+    },
     Read {
         future: ReadMultiple<U, E, B>,
     },
@@ -163,23 +168,49 @@ where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
     B: AsMut<[u8]>,
 {
-    fn advance(self) -> nb::Result<Self, E> {
+    fn advance(self) -> Result<Self, (Self, nb::Error<E>)> {
         use WriteAndReadResponseState::*;
         match self {
             Write {
                 mut future,
                 read_buf,
                 response_len,
-            } => {
-                let uart = future.poll()?;
-                Ok(Read {
+            } => match future.poll() {
+                Ok(uart) => Ok(Flush {
+                    uart,
+                    read_buf,
+                    response_len,
+                }),
+                Err(err) => Err((
+                    Write {
+                        future,
+                        read_buf,
+                        response_len,
+                    },
+                    err,
+                )),
+            },
+            Flush {
+                mut uart,
+                read_buf,
+                response_len,
+            } => match uart.flush() {
+                Ok(()) => Ok(Read {
                     future: ReadMultiple::new(uart, read_buf, response_len),
-                })
-            }
-            Read { mut future } => {
-                let (uart, read_buf) = future.poll()?;
-                Ok(Completed { uart, read_buf })
-            }
+                }),
+                Err(err) => Err((
+                    Flush {
+                        uart,
+                        read_buf,
+                        response_len,
+                    },
+                    err,
+                )),
+            },
+            Read { mut future } => match future.poll() {
+                Ok((uart, read_buf)) => Ok(Completed { uart, read_buf }),
+                Err(err) => Err((Read { future }, err)),
+            },
             other => Ok(other),
         }
     }
@@ -213,12 +244,165 @@ where
 {
     fn poll(&mut self) -> nb::Result<(U, B), E> {
         loop {
-            use WriteAndReadResponseState::*;
-            let new_state = self.state.take().unwrap().advance()?;
-            if let Completed { uart, read_buf } = new_state {
+            let (result, new_state) = match self.state.take().unwrap().advance() {
+                Ok(new_state) => (Ok(()), new_state),
+                Err((new_state, err)) => (Err(err), new_state),
+            };
+
+            if let WriteAndReadResponseState::Completed { uart, read_buf } = new_state {
                 return Ok((uart, read_buf));
             }
+
             self.state = Some(new_state);
+            if let Err(err) = result {
+                return Err(err);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nb::block;
+    use std::collections::VecDeque;
+
+    #[derive(Debug)]
+    struct SerialMock {
+        read_return_values: VecDeque<nb::Result<u8, String>>,
+        write_return_values: VecDeque<nb::Result<(), String>>,
+        write_buf: Vec<u8>,
+        flushed_up_to: usize,
+    }
+
+    impl SerialMock {
+        fn new(
+            read_return_values: Vec<nb::Result<u8, String>>,
+            write_return_values: Vec<nb::Result<(), String>>,
+        ) -> Self {
+            Self {
+                read_return_values: VecDeque::from(read_return_values),
+                write_return_values: VecDeque::from(write_return_values),
+                write_buf: vec![],
+                flushed_up_to: 0,
+            }
+        }
+    }
+
+    impl Read<u8> for SerialMock {
+        type Error = String;
+
+        fn read(&mut self) -> nb::Result<u8, Self::Error> {
+            self.read_return_values
+                .pop_front()
+                .unwrap_or(Err(nb::Error::WouldBlock))
+        }
+    }
+    impl Write<u8> for SerialMock {
+        type Error = String;
+
+        fn write(&mut self, c: u8) -> nb::Result<(), Self::Error> {
+            if let Some(return_value) = self.write_return_values.pop_front() {
+                if return_value.is_ok() {
+                    self.write_buf.push(c);
+                }
+                return_value
+            } else {
+                Err(nb::Error::WouldBlock)
+            }
+        }
+
+        fn flush(&mut self) -> nb::Result<(), Self::Error> {
+            self.flushed_up_to = self.write_buf.len();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_write_all() -> Result<(), Box<dyn std::error::Error>> {
+        let write_mock = SerialMock::new(
+            vec![],
+            vec![
+                Ok(()),
+                Ok(()),
+                Err(nb::Error::WouldBlock),
+                Err(nb::Error::WouldBlock),
+                Ok(()),
+            ],
+        );
+        let buf = ['f' as u8, 'o' as u8, 'o' as u8];
+
+        let mut future = WriteAll::new(write_mock, &buf);
+        let write_mock = block!(future.poll())?;
+        assert_eq!(write_mock.write_buf, buf);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_all_error_propagation() {
+        let write_mock =
+            SerialMock::new(vec![], vec![Err(nb::Error::Other("expected error".into()))]);
+        let buf = [0u8; 1];
+
+        let mut future = WriteAll::new(write_mock, &buf);
+        assert_eq!(
+            block!(future.poll()).unwrap_err(),
+            String::from("expected error")
+        );
+    }
+
+    #[test]
+    fn test_read_multiple() -> Result<(), Box<dyn std::error::Error>> {
+        let read_mock = SerialMock::new(
+            vec![
+                Ok('f' as u8),
+                Ok('o' as u8),
+                Err(nb::Error::WouldBlock),
+                Err(nb::Error::WouldBlock),
+                Ok('o' as u8),
+            ],
+            vec![],
+        );
+        let buf = [0u8; 3];
+
+        let mut future = ReadMultiple::new(read_mock, buf, 3);
+        let (_, buf) = block!(future.poll())?;
+        assert_eq!(buf, ['f' as u8, 'o' as u8, 'o' as u8]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_multiple_error_propagation() {
+        let read_mock =
+            SerialMock::new(vec![Err(nb::Error::Other("expected error".into()))], vec![]);
+        let buf = [0u8; 1];
+
+        let mut future = ReadMultiple::new(read_mock, buf, 1);
+        assert_eq!(
+            block!(future.poll()).unwrap_err(),
+            String::from("expected error")
+        );
+    }
+
+    #[test]
+    fn test_write_and_read_response() -> Result<(), Box<dyn std::error::Error>> {
+        let serial_mock = SerialMock::new(
+            vec![
+                Ok('o' as u8),
+                Err(nb::Error::WouldBlock),
+                Ok('u' as u8),
+                Ok('t' as u8),
+            ],
+            vec![Ok(()), Err(nb::Error::WouldBlock), Ok(())],
+        );
+        let write_buf = ['i' as u8, 'n' as u8];
+        let read_buf = [0u8; 3];
+
+        let mut future = WriteAndReadResponse::new(serial_mock, &write_buf, read_buf, 3);
+        let (serial_mock, read_buf) = block!(future.poll())?;
+        assert_eq!(serial_mock.write_buf, write_buf);
+        assert_eq!(read_buf, ['o' as u8, 'u' as u8, 't' as u8]);
+        assert_eq!(serial_mock.flushed_up_to, 2);
+        Ok(())
     }
 }
