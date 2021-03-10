@@ -10,11 +10,17 @@ use embedded_hal::serial::{Read, Write};
 ///
 /// The future must not be polled after it has returned an
 /// [`core::result::Result::Ok`] result.
+///
+/// * `R`: OK result type
+/// * `E`: error type
 pub trait NbFuture<R, E> {
     fn poll(&mut self) -> nb::Result<R, E>;
 }
 
 /// Write all bytes within a buffer.
+///
+/// * `'a`: buffer lifetime
+/// * `W`: Concrete [`embedded_hal::serial::Write`] type with error type `E`
 pub struct WriteAll<'a, W, E>
 where
     W: Write<u8, Error = E>,
@@ -63,6 +69,9 @@ where
 }
 
 /// Read multiple bytes.
+///
+/// * `R`: Concrete [`embedded_hal::serial::Read`] type with error type `E`
+/// * `B`: Type of buffer to write to
 pub struct ReadMultiple<R, E, B>
 where
     R: Read<u8, Error = E>,
@@ -117,6 +126,11 @@ where
 }
 
 /// Write all bytes within a buffer and read a fixed length response afterwards.
+///
+/// * `'a`: buffer lifetime
+/// * `U`: Concrete [`embedded_hal::serial::Read`] and
+///   [`embedded_hal::serial::Write`] type with error type `E`
+/// * `B`: Type of buffer to write to
 pub struct WriteAndReadResponse<'a, U, E, B>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
