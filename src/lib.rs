@@ -46,6 +46,15 @@ where
         }
     }
 
+    pub fn into_inner(self) -> U {
+        use MhZ19CState::*;
+        match self.state {
+            Idle(None) => panic!("Internal error."),
+            Idle(Some((uart, _))) => uart,
+            ReadCo2(future) => future.cancel().unwrap().0,
+        }
+    }
+
     pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
         if let MhZ19CState::Idle(uart) = &mut self.state {
             let (uart, buf) = uart.take().unwrap();
@@ -61,7 +70,10 @@ where
                     self.state = MhZ19CState::Idle(Some((uart, buf)));
                     Ok(u16::from_be_bytes(data[..2].try_into().unwrap()))
                 }
-                Err(err) => Err(err.map(Error::UartError)),
+                Err(err) => Err(err.map(|inner_err| match inner_err {
+                    nb_comm::Error::Stopped => Error::InternalError,
+                    nb_comm::Error::Execution(uart_err) => Error::UartError(uart_err),
+                })),
             }
         } else {
             Err(nb::Error::WouldBlock)
@@ -88,6 +100,7 @@ pub enum Error<T> {
     FrameError(frame::Error),
     NotAResponse,
     OpCodeMismatch { expected: u8, got: u8 },
+    InternalError,
     UartError(T),
 }
 
@@ -101,6 +114,9 @@ impl<T: Display> Display for Error<T> {
                 "Expected response for op code 0x{:x}, but got op code 0x{:x}.",
                 expected, got
             ),
+            Self::InternalError => {
+                write!(f, "An internal error occured, please report this as a bug.")
+            }
             Self::UartError(err) => write!(f, "UART communication error: {}", err),
         }
     }
@@ -127,7 +143,10 @@ mod tests {
     fn test_read_co2() {
         let uart = create_serial_mock_returning(&READ_CO2_RESPONSE);
         let mut co2sensor = MhZ19C::new(uart);
-        assert_eq!(block!(co2sensor.read_co2_ppm()), Ok(800));
+        let co2 = block!(co2sensor.read_co2_ppm());
+        let uart = co2sensor.into_inner();
+        assert_eq!(uart.write_buf, &*READ_CO2.as_ref());
+        assert_eq!(co2, Ok(800));
     }
 
     #[test]
@@ -165,5 +184,13 @@ mod tests {
             block!(co2sensor.read_co2_ppm()),
             Err(Error::FrameError(frame::Error::InvalidChecksum))
         );
+    }
+
+    #[test]
+    fn test_into_inner_during_read() {
+        let uart = SerialMock::new(vec![], vec![Err(nb::Error::WouldBlock)]);
+        let mut co2sensor = MhZ19C::new(uart);
+        assert_eq!(co2sensor.read_co2_ppm(), Err(nb::Error::WouldBlock));
+        let _ = co2sensor.into_inner(); // Must not panic
     }
 }
