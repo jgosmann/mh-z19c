@@ -1,8 +1,11 @@
+//! Serial communication frame handling for the MH-Z19C sensor.
+
 use crate::command::Command;
 use core::convert::From;
 use core::fmt::{self, Display, Formatter};
 
-fn checksum(buf: &[u8]) -> u8 {
+/// Calculates the checksum of `buf`.
+pub fn checksum(buf: &[u8]) -> u8 {
     buf.iter()
         .fold(0x00, |acc: u8, &x: &u8| acc.overflowing_sub(x).0)
 }
@@ -10,6 +13,7 @@ fn checksum(buf: &[u8]) -> u8 {
 const START_BYTE: u8 = 0xff;
 const COMMAND_MAGIC_BYTE: u8 = 0x01;
 
+/// Represents a frame for the serial communication.
 pub struct Frame([u8; 9]);
 
 impl From<Command> for Frame {
@@ -28,10 +32,12 @@ impl AsRef<[u8]> for Frame {
 }
 
 impl Frame {
+    /// Return a new initialized [`Frame`] struct.
     pub fn new(data: [u8; 9]) -> Self {
         Self(data)
     }
 
+    /// Unwrap the frame data.
     pub fn into_inner(self) -> [u8; 9] {
         self.0
     }
@@ -40,14 +46,17 @@ impl Frame {
         self.0[0]
     }
 
+    /// Returns `true` if the frame has a valid start byte.
     pub fn has_valid_start_byte(&self) -> bool {
         self.start_byte() == START_BYTE
     }
 
+    /// Returns `true` if the frame represents the response to a command.
     pub fn is_response(&self) -> bool {
         self.0[1] != COMMAND_MAGIC_BYTE
     }
 
+    /// Returns the op code byte of the command of a request or response.
     pub fn op_code(&self) -> u8 {
         if self.is_response() {
             self.0[1]
@@ -59,6 +68,8 @@ impl Frame {
     fn checksum(&self) -> u8 {
         self.0[8]
     }
+
+    /// Returns the command arguments or response data (without op code).
     pub fn data(&self) -> &[u8] {
         if self.is_response() {
             &self.0[2..8]
@@ -67,10 +78,15 @@ impl Frame {
         }
     }
 
+    /// Returns `true` if the frame's checksum is valid.
     pub fn has_valid_checksum(&self) -> bool {
         checksum(&self.0[1..8]) == self.checksum()
     }
 
+    /// Validates the correctness of the frame.
+    ///
+    /// * Checks that the start byte is valid.
+    /// * Checks that the checksum is valid.
     pub fn validate(&self) -> Result<(), Error> {
         if !self.has_valid_start_byte() {
             Err(Error::InvalidStartByte(self.start_byte()))
@@ -84,7 +100,9 @@ impl Frame {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
+    /// Indicates that the start byte is invalid and provides that invalid byte.
     InvalidStartByte(u8),
+    /// Indicates that the checksum is invalid.
     InvalidChecksum,
 }
 
