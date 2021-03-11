@@ -115,3 +115,64 @@ impl Display for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::Command;
+
+    #[test]
+    fn test_frame_read_co2_command() {
+        let frame = Frame::new([0xff, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79]);
+        assert!(frame.has_valid_start_byte());
+        assert!(!frame.is_response());
+        assert_eq!(frame.op_code(), 0x86);
+        assert_eq!(frame.data(), [0x00; 5]);
+        assert!(frame.has_valid_checksum());
+        assert!(frame.validate().is_ok());
+    }
+
+    #[test]
+    fn test_frame_read_co2_response() {
+        let frame = Frame::new([0xff, 0x86, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x77]);
+        assert!(frame.has_valid_start_byte());
+        assert!(frame.is_response());
+        assert_eq!(frame.op_code(), 0x86);
+        assert_eq!(frame.data(), [0x01, 0x02, 0x00, 0x00, 0x00, 0x00]);
+        assert!(frame.has_valid_checksum());
+        assert!(frame.validate().is_ok());
+    }
+
+    #[test]
+    fn test_frame_invalid_start_byte() {
+        let frame = Frame::new([0x00; 9]);
+        assert!(!frame.has_valid_start_byte());
+        assert_eq!(frame.validate(), Err(Error::InvalidStartByte(0x00)));
+    }
+
+    #[test]
+    fn test_frame_invalid_checksum() {
+        let frame = Frame::new([0xff; 9]);
+        assert!(!frame.has_valid_checksum());
+        assert_eq!(frame.validate(), Err(Error::InvalidChecksum));
+    }
+
+    #[test]
+    fn test_frame_from_command() {
+        let frame: Frame = Command::SetSelfCalibrate(true).into();
+        assert!(frame.has_valid_start_byte());
+        assert!(!frame.is_response());
+        assert_eq!(frame.op_code(), Command::SetSelfCalibrate(true).op_code());
+        assert_eq!(
+            frame.data(),
+            &Command::SetSelfCalibrate(true).serialize()[1..]
+        );
+        assert!(frame.has_valid_checksum());
+        assert!(frame.validate().is_ok());
+    }
+
+    #[test]
+    fn test_checksum() {
+        assert_eq!(checksum(&[0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00]), 0x79);
+    }
+}
