@@ -14,6 +14,9 @@ pub mod command;
 pub mod frame;
 mod nb_comm;
 
+#[cfg(test)]
+mod serial_mock;
+
 enum MhZ19CState<'a, U, E>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
@@ -111,87 +114,29 @@ extern crate std;
 mod tests {
     use super::*;
 
+    use crate::serial_mock::SerialMock;
     use nb::block;
-    use std::collections::VecDeque;
-    use std::string::String;
-    use std::vec::Vec;
 
-    struct MockUart {
-        response: VecDeque<u8>,
-        write_buffer: Vec<u8>,
-        return_start_byte: u8,
-        return_checksum: u8,
-    }
+    static READ_CO2_RESPONSE: [u8; 9] = [0xff, 0x86, 0x03, 0x20, 0x12, 0x34, 0x56, 0x78, 0x43];
 
-    impl Default for MockUart {
-        fn default() -> Self {
-            Self {
-                response: VecDeque::new(),
-                write_buffer: vec![],
-                return_start_byte: 0xff,
-                return_checksum: 0x43,
-            }
-        }
-    }
-
-    impl MockUart {
-        fn with_read_co2_response(mut self) -> Self {
-            self.response = VecDeque::from(vec![
-                self.return_start_byte,
-                0x86,
-                0x03,
-                0x20,
-                0x12,
-                0x34,
-                0x56,
-                0x78,
-                self.return_checksum,
-            ]);
-            self
-        }
-        fn with_return_start_byte(mut self, return_start_byte: u8) -> Self {
-            self.return_start_byte = return_start_byte;
-            self
-        }
-        fn with_return_checksum(mut self, return_checksum: u8) -> Self {
-            self.return_checksum = return_checksum;
-            self
-        }
-    }
-
-    impl Read<u8> for MockUart {
-        type Error = String;
-
-        fn read(&mut self) -> nb::Result<u8, Self::Error> {
-            match self.response.pop_front() {
-                Some(c) => Ok(c),
-                None => Err(nb::Error::Other("No more data.".into())),
-            }
-        }
-    }
-
-    impl Write<u8> for MockUart {
-        type Error = String;
-
-        fn write(&mut self, c: u8) -> nb::Result<(), Self::Error> {
-            self.write_buffer.push(c);
-            Ok(())
-        }
-
-        fn flush(&mut self) -> nb::Result<(), Self::Error> {
-            Ok(())
-        }
+    fn create_serial_mock_returning(read_data: &[u8]) -> SerialMock {
+        SerialMock::new(read_data.iter().copied().map(Ok).collect(), vec![Ok(()); 9])
     }
 
     #[test]
     fn test_read_co2() {
-        let mut co2sensor = MhZ19C::new(MockUart::default().with_read_co2_response());
+        let uart = create_serial_mock_returning(&READ_CO2_RESPONSE);
+        let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(block!(co2sensor.read_co2_ppm()), Ok(800));
     }
 
     #[test]
     fn test_read_co2_uart_error() {
-        let mut co2sensor = MhZ19C::new(MockUart::default());
+        let uart = SerialMock::new(
+            vec![Err(nb::Error::Other("No more data.".into()))],
+            vec![Ok(()); 9],
+        );
+        let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
             Err(Error::UartError("No more data.".into()))
@@ -200,9 +145,9 @@ mod tests {
 
     #[test]
     fn test_read_co2_invalid_start_byte() {
-        let uart = MockUart::default()
-            .with_return_start_byte(0x00)
-            .with_read_co2_response();
+        let mut response = READ_CO2_RESPONSE.clone();
+        response[0] = 0x00;
+        let uart = create_serial_mock_returning(&response);
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
@@ -212,9 +157,9 @@ mod tests {
 
     #[test]
     fn test_read_co2_invalid_checksum() {
-        let uart = MockUart::default()
-            .with_return_checksum(0x00)
-            .with_read_co2_response();
+        let mut response = READ_CO2_RESPONSE.clone();
+        response[8] = 0x00;
+        let uart = create_serial_mock_returning(&response);
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
