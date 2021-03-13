@@ -15,7 +15,7 @@
 //! # let uart = create_serial_mock_returning(&READ_CO2_RESPONSE);
 //! let mut co2sensor = MhZ19C::new(uart);
 //! let co2 = block!(co2sensor.read_co2_ppm())?;
-//! println!("CO₂ concenration: {}ppm", co2);
+//! println!("CO₂ concentration: {}ppm", co2);
 //! # Ok(())
 //! # }
 //! ```
