@@ -26,6 +26,15 @@ where
     SetSelfCalibrate(WriteAll<U, E, Frame>),
 }
 
+impl<'a, U, E> Default for MhZ19CState<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+{
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
 lazy_static! {
     static ref READ_CO2: Frame = Command::ReadCo2.into();
 }
@@ -44,7 +53,7 @@ where
 {
     pub fn new(uart: U) -> Self {
         Self {
-            state: MhZ19CState::Idle,
+            state: MhZ19CState::default(),
             uart: Some(uart),
         }
     }
@@ -53,61 +62,74 @@ where
         use MhZ19CState::*;
         match self.state {
             Idle => self.uart.take().unwrap(),
-            ReadCo2(future) => future.cancel().unwrap().0,
-            SetSelfCalibrate(future) => future.cancel().unwrap(),
+            ReadCo2(future) => future.into_return_value().0,
+            SetSelfCalibrate(future) => future.into_return_value(),
         }
     }
 
     pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
-        if let MhZ19CState::Idle = &mut self.state {
-            let uart = self.uart.take().unwrap();
-            self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(
-                uart,
-                &*READ_CO2.as_ref(),
-                [0u8; 9],
-                9,
-            ));
-        }
-        if let MhZ19CState::ReadCo2(future) = &mut self.state {
-            match future.poll() {
-                Ok((uart, buf)) => {
-                    let frame = Frame::new(buf);
-                    let data = Self::unpack_return_frame(Command::ReadCo2, &frame)
-                        .map_err(nb::Error::Other)?;
-                    self.uart = Some(uart);
-                    self.state = MhZ19CState::Idle;
-                    Ok(u16::from_be_bytes(data[..2].try_into().unwrap()))
-                }
-                Err(err) => Err(err.map(|inner_err| match inner_err {
-                    nb_comm::Error::Stopped => Error::InternalError,
-                    nb_comm::Error::Execution(uart_err) => Error::UartError(uart_err),
-                })),
+        loop {
+            if let MhZ19CState::Idle = &mut self.state {
+                let uart = self.uart.take().unwrap();
+                self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(
+                    uart,
+                    &*READ_CO2.as_ref(),
+                    [0u8; 9],
+                    9,
+                ));
             }
-        } else {
-            Err(nb::Error::WouldBlock)
+
+            self.poll()?;
+
+            let state = core::mem::take(&mut self.state);
+            if let MhZ19CState::ReadCo2(future) = state {
+                let (uart, buf) = future.into_return_value();
+                self.uart = Some(uart);
+                let frame = Frame::new(buf);
+                let data = Self::unpack_return_frame(Command::ReadCo2, &frame)
+                    .map_err(nb::Error::Other)?;
+                return Ok(u16::from_be_bytes(data[..2].try_into().unwrap()));
+            } else {
+                self.recover_uart(state);
+            }
         }
     }
 
     pub fn set_self_calibrate(&mut self, enabled: bool) -> nb::Result<(), Error<E>> {
-        if let MhZ19CState::Idle = &mut self.state {
-            let uart = self.uart.take().unwrap();
-            let frame: Frame = Command::SetSelfCalibrate(enabled).into();
-            self.state = MhZ19CState::SetSelfCalibrate(WriteAll::new(uart, frame));
-        }
-        if let MhZ19CState::SetSelfCalibrate(future) = &mut self.state {
-            match future.poll() {
-                Ok(uart) => {
-                    self.uart = Some(uart);
-                    self.state = MhZ19CState::Idle;
-                    Ok(())
-                }
-                Err(err) => Err(err.map(|inner_err| match inner_err {
-                    nb_comm::Error::Stopped => Error::InternalError,
-                    nb_comm::Error::Execution(uart_err) => Error::UartError(uart_err),
-                })),
+        loop {
+            if let MhZ19CState::Idle = &mut self.state {
+                let uart = self.uart.take().unwrap();
+                let frame: Frame = Command::SetSelfCalibrate(enabled).into();
+                self.state = MhZ19CState::SetSelfCalibrate(WriteAll::new(uart, frame));
             }
-        } else {
-            Err(nb::Error::WouldBlock)
+
+            self.poll()?;
+
+            let state = core::mem::take(&mut self.state);
+            if let MhZ19CState::SetSelfCalibrate(future) = state {
+                self.uart = Some(future.into_return_value());
+                return Ok(());
+            } else {
+                self.recover_uart(state);
+            }
+        }
+    }
+
+    fn poll(&mut self) -> nb::Result<(), Error<E>> {
+        use MhZ19CState::*;
+        match &mut self.state {
+            Idle => Ok(()),
+            ReadCo2(future) => future.poll(),
+            SetSelfCalibrate(future) => future.poll(),
+        }
+        .map_err(|err| err.map(Error::UartError))
+    }
+    fn recover_uart(&mut self, state: MhZ19CState<U, E>) {
+        use MhZ19CState::*;
+        match state {
+            Idle => (),
+            ReadCo2(future) => self.uart = Some(future.into_return_value().0),
+            SetSelfCalibrate(future) => self.uart = Some(future.into_return_value()),
         }
     }
 
@@ -164,6 +186,7 @@ mod tests {
     use crate::serial_mock::SerialMock;
     use nb::block;
     use std::string::String;
+    use std::vec::Vec;
 
     static READ_CO2_RESPONSE: [u8; 9] = [0xff, 0x86, 0x03, 0x20, 0x12, 0x34, 0x56, 0x78, 0x43];
     static SELF_CALIBRATE_ON_COMMAND: [u8; 9] =
@@ -246,5 +269,32 @@ mod tests {
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(co2sensor.read_co2_ppm(), Err(nb::Error::WouldBlock));
         let _ = co2sensor.into_inner(); // Must not panic
+    }
+
+    #[test]
+    fn test_ignore_read_co2_result_by_polling_set_self_calibrate() {
+        let mut read_data = Vec::with_capacity(10);
+        read_data.push(Err(nb::Error::WouldBlock));
+        read_data.extend(READ_CO2_RESPONSE.iter().copied().map(Ok));
+        let uart = SerialMock::new(read_data, vec![Ok(()); 2 * 9]);
+        let mut co2sensor = MhZ19C::new(uart);
+        assert_eq!(co2sensor.read_co2_ppm(), Err(nb::Error::WouldBlock));
+        assert_eq!(block!(co2sensor.set_self_calibrate(true)), Ok(()));
+    }
+
+    #[test]
+    fn test_read_co2_without_waiting_for_set_self_calibrate() {
+        let mut write_return_values = vec![Ok(()); 2 * 9 + 1];
+        write_return_values[0] = Err(nb::Error::WouldBlock);
+        let uart = SerialMock::new(
+            READ_CO2_RESPONSE.iter().copied().map(Ok).collect(),
+            write_return_values,
+        );
+        let mut co2sensor = MhZ19C::new(uart);
+        assert_eq!(
+            co2sensor.set_self_calibrate(true),
+            Err(nb::Error::WouldBlock)
+        );
+        assert_eq!(block!(co2sensor.read_co2_ppm()), Ok(800));
     }
 }

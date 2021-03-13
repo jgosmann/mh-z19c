@@ -11,21 +11,20 @@ use embedded_hal::serial::{Read, Write};
 /// The future must not be polled after it has returned an
 /// [`core::result::Result::Ok`] result.
 ///
-/// * `R`: OK result type
+/// To retrieve the result use [`into_return_value`]. If called before
+/// completing the future this can be used to retrieve owned values when
+/// intending to cancel the future.
+///
+/// * `R`: return value type, wrap anything that is not available before the
+///   completion of the future into an [`core::option::Option`].
 /// * `E`: error type
 pub trait NbFuture<R, E> {
-    fn poll(&mut self) -> NbFutureResult<R, E>;
+    /// Poll the future and advance execution if possible.
+    fn poll(&mut self) -> nb::Result<(), E>;
+    /// Turn the future into the owned variable captured by the future and other
+    /// return values.
+    fn into_return_value(self) -> R;
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error<E> {
-    /// The future already stopped and the operation cannot be performed.
-    Stopped,
-    /// Error during the execution of the future.
-    Execution(E),
-}
-
-type NbFutureResult<R, E> = nb::Result<R, Error<E>>;
 
 /// Write all bytes within a buffer.
 ///
@@ -37,7 +36,7 @@ where
     W: Write<u8, Error = E>,
     B: AsRef<[u8]>,
 {
-    uart: Option<W>,
+    uart: W,
     buf: B,
     bytes_written: usize,
 }
@@ -53,14 +52,10 @@ where
     /// completion.
     pub fn new(uart: W, buf: B) -> Self {
         Self {
-            uart: Some(uart),
+            uart,
             buf,
             bytes_written: 0,
         }
-    }
-
-    pub fn cancel(self) -> Option<W> {
-        self.uart
     }
 }
 
@@ -69,20 +64,23 @@ where
     W: Write<u8, Error = E>,
     B: AsRef<[u8]>,
 {
-    fn poll(&mut self) -> NbFutureResult<W, E> {
-        let uart = self.uart.as_mut().ok_or(Error::Stopped)?;
+    fn poll(&mut self) -> nb::Result<(), E> {
         loop {
             let c = self.buf.as_ref()[self.bytes_written];
-            match uart.write(c) {
+            match self.uart.write(c) {
                 Ok(()) => {
                     self.bytes_written += 1;
                     if self.bytes_written >= self.buf.as_ref().len() {
-                        return Ok(self.uart.take().unwrap());
+                        return Ok(());
                     }
                 }
-                Err(err) => return Err(err.map(Error::Execution)),
+                Err(err) => return Err(err),
             }
         }
+    }
+
+    fn into_return_value(self) -> W {
+        self.uart
     }
 }
 
@@ -95,8 +93,8 @@ where
     R: Read<u8, Error = E>,
     B: AsMut<[u8]>,
 {
-    uart: Option<R>,
-    buf: Option<B>,
+    uart: R,
+    buf: B,
     bytes_read: usize,
     read_len: usize,
 }
@@ -112,15 +110,11 @@ where
     /// read from [`Self::poll`] on completion.
     pub fn new(uart: R, buf: B, read_len: usize) -> Self {
         Self {
-            uart: Some(uart),
-            buf: Some(buf),
+            uart,
+            buf,
             bytes_read: 0,
             read_len,
         }
-    }
-
-    fn cancel(self) -> Option<(R, B)> {
-        self.uart.zip(self.buf)
     }
 }
 
@@ -129,21 +123,23 @@ where
     R: Read<u8, Error = E>,
     B: AsMut<[u8]>,
 {
-    fn poll(&mut self) -> NbFutureResult<(R, B), E> {
+    fn poll(&mut self) -> nb::Result<(), E> {
         loop {
-            let uart = self.uart.as_mut().ok_or(Error::Stopped)?;
-            let buf = self.buf.as_mut().ok_or(Error::Stopped)?.as_mut();
-            match uart.read() {
+            match self.uart.read() {
                 Ok(c) => {
-                    buf[self.bytes_read] = c;
+                    self.buf.as_mut()[self.bytes_read] = c;
                     self.bytes_read += 1;
                     if self.bytes_read >= self.read_len {
-                        return Ok((self.uart.take().unwrap(), self.buf.take().unwrap()));
+                        return Ok(());
                     }
                 }
-                Err(err) => return Err(err.map(Error::Execution)),
+                Err(err) => return Err(err),
             }
         }
+    }
+
+    fn into_return_value(self) -> (R, B) {
+        (self.uart, self.buf)
     }
 }
 
@@ -194,7 +190,7 @@ where
     BWrite: AsRef<[u8]>,
     BRead: AsMut<[u8]>,
 {
-    fn advance(self) -> Result<Self, (Self, nb::Error<Error<E>>)> {
+    fn advance(self) -> Result<Self, (Self, nb::Error<E>)> {
         use WriteAndReadResponseState::*;
         match self {
             Write {
@@ -202,8 +198,8 @@ where
                 read_buf,
                 response_len,
             } => match future.poll() {
-                Ok(uart) => Ok(Flush {
-                    uart,
+                Ok(()) => Ok(Flush {
+                    uart: future.into_return_value(),
                     read_buf,
                     response_len,
                 }),
@@ -230,11 +226,14 @@ where
                         read_buf,
                         response_len,
                     },
-                    err.map(Error::Execution),
+                    err,
                 )),
             },
             Read { mut future } => match future.poll() {
-                Ok((uart, read_buf)) => Ok(Completed { uart, read_buf }),
+                Ok(()) => {
+                    let (uart, read_buf) = future.into_return_value();
+                    Ok(Completed { uart, read_buf })
+                }
                 Err(err) => Err((Read { future }, err)),
             },
             other => Ok(other),
@@ -246,9 +245,9 @@ where
         match self {
             Write {
                 future, read_buf, ..
-            } => (future.cancel().unwrap(), read_buf),
+            } => (future.into_return_value(), read_buf),
             Flush { uart, read_buf, .. } => (uart, read_buf),
-            Read { future } => future.cancel().unwrap(),
+            Read { future } => future.into_return_value(),
             Completed { uart, read_buf } => (uart, read_buf),
         }
     }
@@ -274,10 +273,6 @@ where
             }),
         }
     }
-
-    pub fn cancel(self) -> Option<(U, BRead)> {
-        Some(self.state?.cancel())
-    }
 }
 
 impl<'a, U, E, BWrite, BRead> NbFuture<(U, BRead), E> for WriteAndReadResponse<U, E, BWrite, BRead>
@@ -286,22 +281,27 @@ where
     BWrite: AsRef<[u8]>,
     BRead: AsMut<[u8]>,
 {
-    fn poll(&mut self) -> NbFutureResult<(U, BRead), E> {
+    fn poll(&mut self) -> nb::Result<(), E> {
         loop {
-            let (result, new_state) = match self.state.take().ok_or(Error::Stopped)?.advance() {
+            let (result, new_state) = match self.state.take().unwrap().advance() {
                 Ok(new_state) => (Ok(()), new_state),
                 Err((new_state, err)) => (Err(err), new_state),
             };
 
-            if let WriteAndReadResponseState::Completed { uart, read_buf } = new_state {
-                return Ok((uart, read_buf));
+            self.state = Some(new_state);
+
+            if let Some(WriteAndReadResponseState::Completed { .. }) = self.state {
+                return Ok(());
             }
 
-            self.state = Some(new_state);
             if let Err(err) = result {
                 return Err(err);
             }
         }
+    }
+
+    fn into_return_value(self) -> (U, BRead) {
+        self.state.unwrap().cancel()
     }
 }
 
@@ -314,7 +314,7 @@ mod tests {
     use std::string::String;
 
     #[test]
-    fn test_write_all() -> Result<(), Error<String>> {
+    fn test_write_all() -> Result<(), String> {
         let write_mock = SerialMock::new(
             vec![],
             vec![
@@ -328,7 +328,8 @@ mod tests {
         let buf = ['f' as u8, 'o' as u8, 'o' as u8];
 
         let mut future = WriteAll::new(write_mock, &buf);
-        let write_mock = block!(future.poll())?;
+        block!(future.poll())?;
+        let write_mock = future.into_return_value();
         assert_eq!(write_mock.write_buf, buf);
         Ok(())
     }
@@ -342,13 +343,12 @@ mod tests {
         let mut future = WriteAll::new(write_mock, &buf);
         assert_eq!(
             block!(future.poll()).unwrap_err(),
-            Error::Execution(String::from("expected error"))
+            String::from("expected error")
         );
-        assert!(future.cancel().is_some());
     }
 
     #[test]
-    fn test_read_multiple() -> Result<(), Error<String>> {
+    fn test_read_multiple() -> Result<(), String> {
         let read_mock = SerialMock::new(
             vec![
                 Ok('f' as u8),
@@ -362,7 +362,8 @@ mod tests {
         let buf = [0u8; 3];
 
         let mut future = ReadMultiple::new(read_mock, buf, 3);
-        let (_, buf) = block!(future.poll())?;
+        block!(future.poll())?;
+        let (_, buf) = future.into_return_value();
         assert_eq!(buf, ['f' as u8, 'o' as u8, 'o' as u8]);
         Ok(())
     }
@@ -376,13 +377,12 @@ mod tests {
         let mut future = ReadMultiple::new(read_mock, buf, 1);
         assert_eq!(
             block!(future.poll()).unwrap_err(),
-            Error::Execution(String::from("expected error"))
+            String::from("expected error")
         );
-        assert!(future.cancel().is_some());
     }
 
     #[test]
-    fn test_write_and_read_response() -> Result<(), Error<String>> {
+    fn test_write_and_read_response() -> Result<(), String> {
         let serial_mock = SerialMock::new(
             vec![
                 Ok('o' as u8),
@@ -396,7 +396,8 @@ mod tests {
         let read_buf = [0u8; 3];
 
         let mut future = WriteAndReadResponse::new(serial_mock, &write_buf, read_buf, 3);
-        let (serial_mock, read_buf) = block!(future.poll())?;
+        block!(future.poll())?;
+        let (serial_mock, read_buf) = future.into_return_value();
         assert_eq!(serial_mock.write_buf, write_buf);
         assert_eq!(read_buf, ['o' as u8, 'u' as u8, 't' as u8]);
         assert_eq!(serial_mock.flushed_up_to, 2);
@@ -413,8 +414,7 @@ mod tests {
         let mut future = WriteAndReadResponse::new(serial_mock, &write_buf, read_buf, 3);
         assert_eq!(
             block!(future.poll()).unwrap_err(),
-            Error::Execution(String::from("expected error"))
+            String::from("expected error")
         );
-        assert!(future.cancel().is_some());
     }
 }
