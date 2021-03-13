@@ -31,24 +31,27 @@ type NbFutureResult<R, E> = nb::Result<R, Error<E>>;
 ///
 /// * `'a`: buffer lifetime
 /// * `W`: Concrete [`embedded_hal::serial::Write`] type with error type `E`
-pub struct WriteAll<'a, W, E>
+/// * `B`: Type of buffer
+pub struct WriteAll<W, E, B>
 where
     W: Write<u8, Error = E>,
+    B: AsRef<[u8]>,
 {
     uart: Option<W>,
-    buf: &'a [u8],
+    buf: B,
     bytes_written: usize,
 }
 
-impl<'a, W, E> WriteAll<'a, W, E>
+impl<W, E, B> WriteAll<W, E, B>
 where
     W: Write<u8, Error = E>,
+    B: AsRef<[u8]>,
 {
     /// Create future to write all bytes in `buf` to `uart`.
     ///
     /// The ownership of the `uart` will be returned from [`Self::poll`] on
     /// completion.
-    pub fn new(uart: W, buf: &'a [u8]) -> Self {
+    pub fn new(uart: W, buf: B) -> Self {
         Self {
             uart: Some(uart),
             buf,
@@ -61,18 +64,19 @@ where
     }
 }
 
-impl<'a, W, E> NbFuture<W, E> for WriteAll<'a, W, E>
+impl<W, E, B> NbFuture<W, E> for WriteAll<W, E, B>
 where
     W: Write<u8, Error = E>,
+    B: AsRef<[u8]>,
 {
     fn poll(&mut self) -> NbFutureResult<W, E> {
         let uart = self.uart.as_mut().ok_or(Error::Stopped)?;
         loop {
-            let c = self.buf[self.bytes_written];
+            let c = self.buf.as_ref()[self.bytes_written];
             match uart.write(c) {
                 Ok(()) => {
                     self.bytes_written += 1;
-                    if self.bytes_written >= self.buf.len() {
+                    if self.bytes_written >= self.buf.as_ref().len() {
                         return Ok(self.uart.take().unwrap());
                     }
                 }
@@ -148,43 +152,47 @@ where
 /// * `'a`: buffer lifetime
 /// * `U`: Concrete [`embedded_hal::serial::Read`] and
 ///   [`embedded_hal::serial::Write`] type with error type `E`
-/// * `B`: Type of buffer to write to
-pub struct WriteAndReadResponse<'a, U, E, B>
+/// * `BWrite`: Type of buffer to write
+/// * `BRead`: Type of buffer to read into
+pub struct WriteAndReadResponse<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    B: AsMut<[u8]>,
+    BWrite: AsRef<[u8]>,
+    BRead: AsMut<[u8]>,
 {
-    state: Option<WriteAndReadResponseState<'a, U, E, B>>,
+    state: Option<WriteAndReadResponseState<U, E, BWrite, BRead>>,
 }
 
-enum WriteAndReadResponseState<'a, U, E, B>
+enum WriteAndReadResponseState<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    B: AsMut<[u8]>,
+    BWrite: AsRef<[u8]>,
+    BRead: AsMut<[u8]>,
 {
     Write {
-        future: WriteAll<'a, U, E>,
-        read_buf: B,
+        future: WriteAll<U, E, BWrite>,
+        read_buf: BRead,
         response_len: usize,
     },
     Flush {
         uart: U,
-        read_buf: B,
+        read_buf: BRead,
         response_len: usize,
     },
     Read {
-        future: ReadMultiple<U, E, B>,
+        future: ReadMultiple<U, E, BRead>,
     },
     Completed {
         uart: U,
-        read_buf: B,
+        read_buf: BRead,
     },
 }
 
-impl<'a, U, E, B> WriteAndReadResponseState<'a, U, E, B>
+impl<U, E, BWrite, BRead> WriteAndReadResponseState<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    B: AsMut<[u8]>,
+    BWrite: AsRef<[u8]>,
+    BRead: AsMut<[u8]>,
 {
     fn advance(self) -> Result<Self, (Self, nb::Error<Error<E>>)> {
         use WriteAndReadResponseState::*;
@@ -233,7 +241,7 @@ where
         }
     }
 
-    fn cancel(self) -> (U, B) {
+    fn cancel(self) -> (U, BRead) {
         use WriteAndReadResponseState::*;
         match self {
             Write {
@@ -246,17 +254,18 @@ where
     }
 }
 
-impl<'a, U, E, B> WriteAndReadResponse<'a, U, E, B>
+impl<'a, U, E, BWrite, BRead> WriteAndReadResponse<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    B: AsMut<[u8]>,
+    BWrite: AsRef<[u8]>,
+    BRead: AsMut<[u8]>,
 {
     /// Create future to write `buf` bytes to `uart` and read `read_len` bytes
     /// afterwards.
     ///
     /// The ownership of the `uart` will be returned together with the bytes
     /// read from [`Self::poll`] on completion.
-    pub fn new(uart: U, write_buf: &'a [u8], read_buf: B, response_len: usize) -> Self {
+    pub fn new(uart: U, write_buf: BWrite, read_buf: BRead, response_len: usize) -> Self {
         Self {
             state: Some(WriteAndReadResponseState::Write {
                 future: WriteAll::new(uart, write_buf),
@@ -266,17 +275,18 @@ where
         }
     }
 
-    pub fn cancel(self) -> Option<(U, B)> {
+    pub fn cancel(self) -> Option<(U, BRead)> {
         Some(self.state?.cancel())
     }
 }
 
-impl<'a, U, E, B> NbFuture<(U, B), E> for WriteAndReadResponse<'a, U, E, B>
+impl<'a, U, E, BWrite, BRead> NbFuture<(U, BRead), E> for WriteAndReadResponse<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    B: AsMut<[u8]>,
+    BWrite: AsRef<[u8]>,
+    BRead: AsMut<[u8]>,
 {
-    fn poll(&mut self) -> NbFutureResult<(U, B), E> {
+    fn poll(&mut self) -> NbFutureResult<(U, BRead), E> {
         loop {
             let (result, new_state) = match self.state.take().ok_or(Error::Stopped)?.advance() {
                 Ok(new_state) => (Ok(()), new_state),
