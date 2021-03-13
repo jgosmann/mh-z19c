@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.com/jgosmann/mh-z19c.svg?branch=main)](https://travis-ci.com/jgosmann/mh-z19c)
+
 # MH-Z19C crate
 
 Pure rust implementation to read out the Winsen MH-Z19C CO2 sensor.
