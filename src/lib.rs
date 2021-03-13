@@ -1,3 +1,19 @@
+//! Crate to read out the Winsen MH-Z19C CO2 sensor.
+//!
+//! This crate provides an API to read-out the nondispersive infrared (NDIR)
+//! CO₂ sensor MH-Z19C by Winsen via the serial (UART) interface. The provided
+//! API supports non-blocking usage.
+//!
+//! # Example
+//! ```
+//! use mh_z19c::MhZ19C;
+//! use nb::block;
+//!
+//! let mut co2sensor = MhZ19C::new(uart);
+//! let co2 = block!(co2sensor.read_co2_ppm())?;
+//! println!("CO₂ concenration: {}ppm", co2);
+//! ```
+
 #![no_std]
 
 #[macro_use]
@@ -17,6 +33,19 @@ mod nb_comm;
 #[cfg(test)]
 mod serial_mock;
 
+lazy_static! {
+    static ref READ_CO2: Frame = Command::ReadCo2.into();
+}
+
+/// Driver for the MH-Z19C sensor.
+pub struct MhZ19C<'a, U, E>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+{
+    state: MhZ19CState<'a, U, E>,
+    uart: Option<U>,
+}
+
 enum MhZ19CState<'a, U, E>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
@@ -35,22 +64,13 @@ where
     }
 }
 
-lazy_static! {
-    static ref READ_CO2: Frame = Command::ReadCo2.into();
-}
-
-pub struct MhZ19C<'a, U, E>
-where
-    U: Read<u8, Error = E> + Write<u8, Error = E>,
-{
-    state: MhZ19CState<'a, U, E>,
-    uart: Option<U>,
-}
-
 impl<'a, U, E> MhZ19C<'a, U, E>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
+    /// Create a new instance.
+    ///
+    /// * `uart`: Serial (UART) interface for communication with the sensor.
     pub fn new(uart: U) -> Self {
         Self {
             state: MhZ19CState::default(),
@@ -58,6 +78,12 @@ where
         }
     }
 
+    /// Returns the owned UART interface.vec!
+    ///
+    /// Note that this might leave the interface with partially written or read
+    /// bytes on the UART interface if not all MH-Z19C commands have been polled
+    /// to completion (i.e. the last command call did not return
+    /// [`nb::Error::WouldBlock`]).
     pub fn into_inner(mut self) -> U {
         use MhZ19CState::*;
         match self.state {
@@ -67,6 +93,7 @@ where
         }
     }
 
+    /// Reads and returns the CO₂ concentration in parts-per-million (ppm).
     pub fn read_co2_ppm(&mut self) -> nb::Result<u16, Error<E>> {
         loop {
             if let MhZ19CState::Idle = &mut self.state {
@@ -95,6 +122,10 @@ where
         }
     }
 
+    /// Activates or deactivates the sensor's self-calibration mode.
+    ///
+    /// See the sensor's data sheet for more information on self-calibration
+    /// and hand-operated mode.
     pub fn set_self_calibrate(&mut self, enabled: bool) -> nb::Result<(), Error<E>> {
         loop {
             if let MhZ19CState::Idle = &mut self.state {
@@ -124,6 +155,7 @@ where
         }
         .map_err(|err| err.map(Error::UartError))
     }
+
     fn recover_uart(&mut self, state: MhZ19CState<U, E>) {
         use MhZ19CState::*;
         match state {
