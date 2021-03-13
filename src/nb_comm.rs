@@ -309,9 +309,9 @@ where
 mod tests {
     use super::*;
 
-    use crate::serial_mock::SerialMock;
     use nb::block;
     use std::string::String;
+    use test_support::serial_mock::SerialMock;
 
     #[test]
     fn test_write_all() -> Result<(), String> {

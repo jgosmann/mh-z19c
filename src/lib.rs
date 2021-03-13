@@ -9,9 +9,14 @@
 //! use mh_z19c::MhZ19C;
 //! use nb::block;
 //!
+//! # use test_support::{create_serial_mock_returning, READ_CO2_RESPONSE};
+//! # fn main() -> Result<(), mh_z19c::Error<String>> {
+//! # let uart = create_serial_mock_returning(&READ_CO2_RESPONSE);
 //! let mut co2sensor = MhZ19C::new(uart);
 //! let co2 = block!(co2sensor.read_co2_ppm())?;
 //! println!("CO₂ concenration: {}ppm", co2);
+//! # Ok(())
+//! # }
 //! ```
 
 #![no_std]
@@ -29,9 +34,6 @@ use embedded_hal::serial::{Read, Write};
 pub mod command;
 pub mod frame;
 mod nb_comm;
-
-#[cfg(test)]
-mod serial_mock;
 
 lazy_static! {
     static ref READ_CO2: Frame = Command::ReadCo2.into();
@@ -215,18 +217,13 @@ extern crate std;
 mod tests {
     use super::*;
 
-    use crate::serial_mock::SerialMock;
     use nb::block;
     use std::string::String;
     use std::vec::Vec;
-
-    static READ_CO2_RESPONSE: [u8; 9] = [0xff, 0x86, 0x03, 0x20, 0x12, 0x34, 0x56, 0x78, 0x43];
-    static SELF_CALIBRATE_ON_COMMAND: [u8; 9] =
-        [0xff, 0x01, 0x79, 0xa0, 0x00, 0x00, 0x00, 0x00, 0xe6];
-
-    fn create_serial_mock_returning(read_data: &[u8]) -> SerialMock {
-        SerialMock::new(read_data.iter().copied().map(Ok).collect(), vec![Ok(()); 9])
-    }
+    use test_support::serial_mock::SerialMock;
+    use test_support::{
+        create_serial_mock_returning, READ_CO2_RESPONSE, SELF_CALIBRATE_ON_COMMAND,
+    };
 
     #[test]
     fn test_read_co2() {

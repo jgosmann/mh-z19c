@@ -1,5 +1,5 @@
 [package]
-name = "mh-z19c"
+name = "test_support"
 version = "0.1.0"
 authors = ["Jan Gosmann <jan@hyper-world.de>"]
 edition = "2018"
@@ -8,8 +8,4 @@ edition = "2018"
 
 [dependencies]
 embedded-hal = "0.2.4"
-lazy_static = "1.4.0"
 nb = "1.0.0"
-
-[dev-dependencies]
-test_support = { path = "test_support" }
