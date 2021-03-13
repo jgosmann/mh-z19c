@@ -3,6 +3,12 @@ name = "mh-z19c"
 version = "0.1.0"
 authors = ["Jan Gosmann <jan@hyper-world.de>"]
 edition = "2018"
+license = "MIT"
+description = "Pure rust implementation to read out the Winsen MH-Z19C CO2 sensor."
+repository = "https://github.com/jgosmann/mh-z19c"
+readme = "README.md"
+keywords = ["CO2", "sensor"]
+categories = ["embedded"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
