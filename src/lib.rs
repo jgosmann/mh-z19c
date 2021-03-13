@@ -184,10 +184,13 @@ where
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error<T> {
+    /// The frame of a command or return value was invalid.
     FrameError(frame::Error),
+    /// The received data is not response.
     NotAResponse,
+    /// Received a response for a different op code than expected.
     OpCodeMismatch { expected: u8, got: u8 },
-    InternalError,
+    /// Communication error caused by the UART/serial interface.
     UartError(T),
 }
 
@@ -201,9 +204,6 @@ impl<T: Display> Display for Error<T> {
                 "Expected response for op code 0x{:x}, but got op code 0x{:x}.",
                 expected, got
             ),
-            Self::InternalError => {
-                write!(f, "An internal error occured, please report this as a bug.")
-            }
             Self::UartError(err) => write!(f, "UART communication error: {}", err),
         }
     }
