@@ -1,8 +1,9 @@
 //! Crate to read out the Winsen MH-Z19C CO2 sensor.
 //!
 //! This crate provides an API to read-out the nondispersive infrared (NDIR)
-//! CO₂ sensor MH-Z19C by Winsen via the serial (UART) interface. The provided
-//! API supports non-blocking usage.
+//! CO₂ sensor MH-Z19C by Winsen via the serial (UART) interface.
+//!
+//! The provided API supports non-blocking usage and is `no_std`.
 //!
 //! # Example
 //! ```
