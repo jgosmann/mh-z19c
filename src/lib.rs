@@ -19,6 +19,10 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Versioning
+//!
+//! This crate uses [Semantic Versioning](https://semver.org/).
 
 #![no_std]
 

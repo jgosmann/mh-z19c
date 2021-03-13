@@ -18,3 +18,7 @@ let mut co2sensor = MhZ19C::new(uart);
 let co2 = block!(co2sensor.read_co2_ppm())?;
 println!("CO₂ concentration: {}ppm", co2);
 ```
+
+## Versioning
+
+This crate uses [Semantic Versioning](https://semver.org/).
