@@ -45,6 +45,7 @@ lazy_static! {
 }
 
 /// Driver for the MH-Z19C sensor.
+#[derive(Debug)]
 pub struct MhZ19C<'a, U, E>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
@@ -53,6 +54,7 @@ where
     uart: Option<U>,
 }
 
+#[derive(Debug)]
 enum MhZ19CState<'a, U, E>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,

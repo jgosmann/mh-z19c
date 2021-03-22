@@ -14,6 +14,7 @@ const START_BYTE: u8 = 0xff;
 const COMMAND_MAGIC_BYTE: u8 = 0x01;
 
 /// Represents a frame for the serial communication.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Frame([u8; 9]);
 
 impl From<Command> for Frame {
@@ -98,7 +99,7 @@ impl Frame {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// Indicates that the start byte is invalid and provides that invalid byte.
     InvalidStartByte(u8),

@@ -31,6 +31,7 @@ pub trait NbFuture<R, E> {
 /// * `'a`: buffer lifetime
 /// * `W`: Concrete [`embedded_hal::serial::Write`] type with error type `E`
 /// * `B`: Type of buffer
+#[derive(Debug)]
 pub struct WriteAll<W, E, B>
 where
     W: Write<u8, Error = E>,
@@ -88,6 +89,7 @@ where
 ///
 /// * `R`: Concrete [`embedded_hal::serial::Read`] type with error type `E`
 /// * `B`: Type of buffer to write to
+#[derive(Debug)]
 pub struct ReadMultiple<R, E, B>
 where
     R: Read<u8, Error = E>,
@@ -150,6 +152,7 @@ where
 ///   [`embedded_hal::serial::Write`] type with error type `E`
 /// * `BWrite`: Type of buffer to write
 /// * `BRead`: Type of buffer to read into
+#[derive(Debug)]
 pub struct WriteAndReadResponse<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
@@ -159,6 +162,7 @@ where
     state: Option<WriteAndReadResponseState<U, E, BWrite, BRead>>,
 }
 
+#[derive(Debug)]
 enum WriteAndReadResponseState<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
