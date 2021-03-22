@@ -117,6 +117,9 @@ impl Display for Error {
     }
 }
 
+#[cfg(std)]
+impl std::error::Error for Error {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

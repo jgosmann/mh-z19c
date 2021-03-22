@@ -5,7 +5,9 @@
 //!
 //! The provided API supports non-blocking usage and is `no_std`.
 //!
+//!
 //! # Example
+//!
 //! ```
 //! use mh_z19c::MhZ19C;
 //! use nb::block;
@@ -20,11 +22,22 @@
 //! # }
 //! ```
 //!
+//!
+//! # no_std
+//!
+//! This crate is `no_std` by default, unless the `std` feature is activated.
+//! Currently, the `std` feature will only add [`std::error::Error`] trait
+//! implementations to the error types.
+//!
+//!
 //! # Versioning
 //!
 //! This crate uses [Semantic Versioning](https://semver.org/).
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(doc)]
+extern crate std;
 
 #[macro_use]
 extern crate lazy_static;
@@ -215,6 +228,9 @@ impl<T: Display> Display for Error<T> {
         }
     }
 }
+
+#[cfg(std)]
+impl std::error::Error for Error {}
 
 #[cfg(test)]
 #[macro_use]

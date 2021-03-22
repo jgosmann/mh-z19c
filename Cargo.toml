@@ -12,6 +12,9 @@ categories = ["embedded"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+std = []
+
 [dependencies]
 embedded-hal = "0.2.4"
 lazy_static = "1.4.0"
