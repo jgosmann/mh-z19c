@@ -88,11 +88,11 @@ impl Frame {
     ///
     /// * Checks that the start byte is valid.
     /// * Checks that the checksum is valid.
-    pub fn validate(&self) -> Result<(), Error> {
+    pub fn validate(&self) -> Result<(), ValidateFrameError> {
         if !self.has_valid_start_byte() {
-            Err(Error::InvalidStartByte(self.start_byte()))
+            Err(ValidateFrameError::InvalidStartByte(self.start_byte()))
         } else if !self.has_valid_checksum() {
-            Err(Error::InvalidChecksum)
+            Err(ValidateFrameError::InvalidChecksum)
         } else {
             Ok(())
         }
@@ -100,19 +100,21 @@ impl Frame {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
+pub enum ValidateFrameError {
     /// Indicates that the start byte is invalid and provides that invalid byte.
     InvalidStartByte(u8),
     /// Indicates that the checksum is invalid.
     InvalidChecksum,
 }
 
-impl Display for Error {
+impl Display for ValidateFrameError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        use Error::*;
+        use ValidateFrameError::*;
         match self {
-            InvalidStartByte(got) => write!(f, "Expected start byte 0xff, but got 0x{:x}.", got),
-            InvalidChecksum => write!(f, "Invalid checksum."),
+            InvalidStartByte(got) => {
+                write!(f, "expected start byte 0xff, but got 0x{:x}", got)
+            }
+            InvalidChecksum => write!(f, "invalid checksum"),
         }
     }
 }
@@ -151,14 +153,17 @@ mod tests {
     fn test_frame_invalid_start_byte() {
         let frame = Frame::new([0x00; 9]);
         assert!(!frame.has_valid_start_byte());
-        assert_eq!(frame.validate(), Err(Error::InvalidStartByte(0x00)));
+        assert_eq!(
+            frame.validate(),
+            Err(ValidateFrameError::InvalidStartByte(0x00))
+        );
     }
 
     #[test]
     fn test_frame_invalid_checksum() {
         let frame = Frame::new([0xff; 9]);
         assert!(!frame.has_valid_checksum());
-        assert_eq!(frame.validate(), Err(Error::InvalidChecksum));
+        assert_eq!(frame.validate(), Err(ValidateFrameError::InvalidChecksum));
     }
 
     #[test]

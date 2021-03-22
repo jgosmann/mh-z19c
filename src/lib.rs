@@ -43,7 +43,7 @@ extern crate std;
 extern crate lazy_static;
 
 use crate::command::Command;
-use crate::frame::Frame;
+use crate::frame::{Frame, ValidateFrameError};
 use crate::nb_comm::{NbFuture, WriteAll, WriteAndReadResponse};
 use core::convert::TryInto;
 use core::fmt::{self, Display};
@@ -188,7 +188,7 @@ where
     }
 
     fn unpack_return_frame(command: Command, frame: &Frame) -> Result<&[u8], Error<E>> {
-        frame.validate().map_err(Error::FrameError)?;
+        frame.validate().map_err(Error::ValidateFrameError)?;
         if !frame.is_response() {
             Err(Error::NotAResponse)
         } else if frame.op_code() != command.op_code() {
@@ -205,7 +205,7 @@ where
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error<T> {
     /// The frame of a command or return value was invalid.
-    FrameError(frame::Error),
+    ValidateFrameError(ValidateFrameError),
     /// The received data is not response.
     NotAResponse,
     /// Received a response for a different op code than expected.
@@ -217,11 +217,11 @@ pub enum Error<T> {
 impl<T: Display> Display for Error<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FrameError(err) => write!(f, "Frame error: {}", err),
-            Self::NotAResponse => write!(f, "Expected response, but got command."),
+            Self::ValidateFrameError(err) => write!(f, "frame error: {}", err),
+            Self::NotAResponse => write!(f, "expected response, but got command"),
             Self::OpCodeMismatch { expected, got } => write!(
                 f,
-                "Expected response for op code 0x{:x}, but got op code 0x{:x}.",
+                "expected response for op code 0x{:x}, but got op code 0x{:x}",
                 expected, got
             ),
             Self::UartError(err) => write!(f, "UART communication error: {}", err),
@@ -279,7 +279,9 @@ mod tests {
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
-            Err(Error::FrameError(frame::Error::InvalidStartByte(0x00)))
+            Err(Error::ValidateFrameError(
+                ValidateFrameError::InvalidStartByte(0x00)
+            ))
         );
     }
 
@@ -291,7 +293,9 @@ mod tests {
         let mut co2sensor = MhZ19C::new(uart);
         assert_eq!(
             block!(co2sensor.read_co2_ppm()),
-            Err(Error::FrameError(frame::Error::InvalidChecksum))
+            Err(Error::ValidateFrameError(
+                ValidateFrameError::InvalidChecksum
+            ))
         );
     }
 
