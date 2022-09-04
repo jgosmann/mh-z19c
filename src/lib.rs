@@ -55,6 +55,7 @@ mod nb_comm;
 
 lazy_static! {
     static ref READ_CO2: Frame = Command::ReadCo2.into();
+    static ref GET_FIRMWARE_VERSION: Frame = Command::GetFirmwareVersion.into();
 }
 
 /// Driver for the MH-Z19C sensor.
@@ -74,6 +75,7 @@ where
 {
     Idle,
     ReadCo2(WriteAndReadResponse<U, E, &'a [u8], [u8; 9]>),
+    GetFirmwareVersion(WriteAndReadResponse<U, E, &'a [u8], [u8; 9]>),
     SetSelfCalibrate(WriteAll<U, E, Frame>),
 }
 
@@ -111,6 +113,7 @@ where
         match self.state {
             Idle => self.uart.take().unwrap(),
             ReadCo2(future) => future.into_return_value().0,
+            GetFirmwareVersion(future) => future.into_return_value().0,
             SetSelfCalibrate(future) => future.into_return_value(),
         }
     }
@@ -138,6 +141,35 @@ where
                 let data = Self::unpack_return_frame(Command::ReadCo2, &frame)
                     .map_err(nb::Error::Other)?;
                 return Ok(u16::from_be_bytes(data[..2].try_into().unwrap()));
+            } else {
+                self.recover_uart(state);
+            }
+        }
+    }
+
+    pub fn get_firmware_version(&mut self) -> nb::Result<[u8; 4], Error<E>> {
+        loop {
+            if let MhZ19CState::Idle = &mut self.state {
+                let uart = self.uart.take().unwrap();
+                self.state = MhZ19CState::GetFirmwareVersion(WriteAndReadResponse::new(
+                    uart,
+                    &*GET_FIRMWARE_VERSION.as_ref(),
+                    [0u8; 9],
+                    9,
+                ));
+            }
+
+            self.poll()?;
+
+            let state = core::mem::take(&mut self.state);
+            if let MhZ19CState::GetFirmwareVersion(future) = state {
+                let (uart, buf) = future.into_return_value();
+                self.uart = Some(uart);
+                let frame = Frame::new(buf);
+                let data = Self::unpack_return_frame(Command::GetFirmwareVersion, &frame)
+                    .map_err(nb::Error::Other)?;
+                let ret_data = [data[0], data[1], data[2], data[3]];
+                return Ok(ret_data);
             } else {
                 self.recover_uart(state);
             }
@@ -173,6 +205,7 @@ where
         match &mut self.state {
             Idle => Ok(()),
             ReadCo2(future) => future.poll(),
+            GetFirmwareVersion(future) => future.poll(),
             SetSelfCalibrate(future) => future.poll(),
         }
         .map_err(|err| err.map(Error::UartError))
@@ -183,6 +216,7 @@ where
         match state {
             Idle => (),
             ReadCo2(future) => self.uart = Some(future.into_return_value().0),
+            GetFirmwareVersion(future) => self.uart = Some(future.into_return_value().0),
             SetSelfCalibrate(future) => self.uart = Some(future.into_return_value()),
         }
     }
