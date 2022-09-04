@@ -54,6 +54,7 @@ pub mod frame;
 mod nb_comm;
 
 lazy_static! {
+    static ref READ_CO2_AND_TEMPERATURE: Frame = Command::ReadCo2AndTemperature.into();
     static ref READ_CO2: Frame = Command::ReadCo2.into();
     static ref GET_FIRMWARE_VERSION: Frame = Command::GetFirmwareVersion.into();
 }
@@ -74,9 +75,16 @@ where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
 {
     Idle,
+    ReadCo2AndTemperature(WriteAndReadResponse<U, E, &'a [u8], [u8; 9]>),
     ReadCo2(WriteAndReadResponse<U, E, &'a [u8], [u8; 9]>),
     GetFirmwareVersion(WriteAndReadResponse<U, E, &'a [u8], [u8; 9]>),
     SetSelfCalibrate(WriteAll<U, E, Frame>),
+}
+
+pub struct Co2AndTemperature 
+{
+    pub co2_ppm: u16,
+    pub temp_celsius: f32,
 }
 
 impl<'a, U, E> Default for MhZ19CState<'a, U, E>
@@ -112,6 +120,7 @@ where
         use MhZ19CState::*;
         match self.state {
             Idle => self.uart.take().unwrap(),
+            ReadCo2AndTemperature(future) => future.into_return_value().0,
             ReadCo2(future) => future.into_return_value().0,
             GetFirmwareVersion(future) => future.into_return_value().0,
             SetSelfCalibrate(future) => future.into_return_value(),
@@ -141,6 +150,38 @@ where
                 let data = Self::unpack_return_frame(Command::ReadCo2, &frame)
                     .map_err(nb::Error::Other)?;
                 return Ok(u16::from_be_bytes(data[..2].try_into().unwrap()));
+            } else {
+                self.recover_uart(state);
+            }
+        }
+    }
+
+    pub fn read_co2_ppm_and_temp_celsius(&mut self) -> nb::Result<Co2AndTemperature, Error<E>> {
+        loop {
+            if let MhZ19CState::Idle = &mut self.state {
+                let uart = self.uart.take().unwrap();
+                self.state = MhZ19CState::ReadCo2AndTemperature(WriteAndReadResponse::new(
+                    uart,
+                    &*READ_CO2_AND_TEMPERATURE.as_ref(),
+                    [0u8; 9],
+                    9,
+                ));
+            }
+
+            self.poll()?;
+
+            let state = core::mem::take(&mut self.state);
+            if let MhZ19CState::ReadCo2AndTemperature(future) = state {
+                let (uart, buf) = future.into_return_value();
+                self.uart = Some(uart);
+                let frame = Frame::new(buf);
+                let data = Self::unpack_return_frame(Command::ReadCo2AndTemperature, &frame)
+                    .map_err(nb::Error::Other)?;
+
+                let co2_ppm = u16::from_be_bytes(data[2..4].try_into().unwrap());
+                let temp_celsius = f32::from(u16::from_be_bytes(data[..2].try_into().unwrap())) / 100.0;
+
+                return Ok(Co2AndTemperature { co2_ppm, temp_celsius });
             } else {
                 self.recover_uart(state);
             }
@@ -204,6 +245,7 @@ where
         use MhZ19CState::*;
         match &mut self.state {
             Idle => Ok(()),
+            ReadCo2AndTemperature(future) => future.poll(),
             ReadCo2(future) => future.poll(),
             GetFirmwareVersion(future) => future.poll(),
             SetSelfCalibrate(future) => future.poll(),
@@ -215,6 +257,7 @@ where
         use MhZ19CState::*;
         match state {
             Idle => (),
+            ReadCo2AndTemperature(future) => self.uart = Some(future.into_return_value().0),
             ReadCo2(future) => self.uart = Some(future.into_return_value().0),
             GetFirmwareVersion(future) => self.uart = Some(future.into_return_value().0),
             SetSelfCalibrate(future) => self.uart = Some(future.into_return_value()),
