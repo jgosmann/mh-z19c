@@ -59,11 +59,16 @@ lazy_static! {
     static ref GET_FIRMWARE_VERSION: Frame = Command::GetFirmwareVersion.into();
 }
 
+trait FirmwareVersion;
+
+
+
 /// Driver for the MH-Z19C sensor.
 #[derive(Debug)]
-pub struct MhZ19C<'a, U, E>
+pub struct MhZ19C<'a, U, E, V>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
+    V: FimrwareVersion,
 {
     state: MhZ19CState<'a, U, E>,
     uart: Option<U>,
@@ -96,15 +101,16 @@ where
     }
 }
 
-impl<'a, U, E> MhZ19C<'a, U, E>
+impl<'a, U, E, V> MhZ19C<'a, U, E, V>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
+    V: FimrwareVersion,
 {
     /// Create a new instance.
     ///
     /// * `uart`: Serial (UART) interface for communication with the sensor.
-    pub fn new(uart: U) -> Self {
-        Self {
+    pub fn new(uart: U) -> Self::<_, _, _, _, crate::FirmwareVersion::Unknown> {
+        Self::<_, _, _, _, crate::FirmwareVersion::Unknown> {
             state: MhZ19CState::default(),
             uart: Some(uart),
         }
@@ -156,35 +162,13 @@ where
         }
     }
 
-    pub fn read_co2_ppm_and_temp_celsius(&mut self) -> nb::Result<Co2AndTemperature, Error<E>> {
-        loop {
-            if let MhZ19CState::Idle = &mut self.state {
-                let uart = self.uart.take().unwrap();
-                self.state = MhZ19CState::ReadCo2AndTemperature(WriteAndReadResponse::new(
-                    uart,
-                    &*READ_CO2_AND_TEMPERATURE.as_ref(),
-                    [0u8; 9],
-                    9,
-                ));
-            }
+    pub fn upgrade_to_v5(self) -> nb::Result<MhZ19C<'a, U, E, 5>, Error<E>> {
+        let fw_version = self.get_firmware_version();
 
-            self.poll()?;
-
-            let state = core::mem::take(&mut self.state);
-            if let MhZ19CState::ReadCo2AndTemperature(future) = state {
-                let (uart, buf) = future.into_return_value();
-                self.uart = Some(uart);
-                let frame = Frame::new(buf);
-                let data = Self::unpack_return_frame(Command::ReadCo2AndTemperature, &frame)
-                    .map_err(nb::Error::Other)?;
-
-                let co2_ppm = u16::from_be_bytes(data[2..4].try_into().unwrap());
-                let temp_celsius = f32::from(u16::from_be_bytes(data[..2].try_into().unwrap())) / 100.0;
-
-                return Ok(Co2AndTemperature { co2_ppm, temp_celsius });
-            } else {
-                self.recover_uart(state);
-            }
+        if fw_version[0] >= "5" {
+            return Ok(Self<... sonething that upgrades to v5>);
+        } else {
+            return Err("Not the correct version");
         }
     }
 
@@ -275,6 +259,44 @@ where
             })
         } else {
             Ok(frame.data())
+        }
+    }
+}
+
+impl<'a, U, E, 5> MhZ19C<'a, U, E, 5>
+where
+    U: Read<u8, Error = E> + Write<u8, Error = E>,
+    V: FimrwareVersion 
+{
+    pub fn read_co2_ppm_and_temp_celsius(&mut self) -> nb::Result<Co2AndTemperature, Error<E>> {
+        loop {
+            if let MhZ19CState::Idle = &mut self.state {
+                let uart = self.uart.take().unwrap();
+                self.state = MhZ19CState::ReadCo2AndTemperature(WriteAndReadResponse::new(
+                    uart,
+                    &*READ_CO2_AND_TEMPERATURE.as_ref(),
+                    [0u8; 9],
+                    9,
+                ));
+            }
+
+            self.poll()?;
+
+            let state = core::mem::take(&mut self.state);
+            if let MhZ19CState::ReadCo2AndTemperature(future) = state {
+                let (uart, buf) = future.into_return_value();
+                self.uart = Some(uart);
+                let frame = Frame::new(buf);
+                let data = Self::unpack_return_frame(Command::ReadCo2AndTemperature, &frame)
+                    .map_err(nb::Error::Other)?;
+
+                let co2_ppm = u16::from_be_bytes(data[2..4].try_into().unwrap());
+                let temp_celsius = f32::from(u16::from_be_bytes(data[..2].try_into().unwrap())) / 100.0;
+
+                return Ok(Co2AndTemperature { co2_ppm, temp_celsius });
+            } else {
+                self.recover_uart(state);
+            }
         }
     }
 }
