@@ -47,6 +47,7 @@ use crate::frame::{Frame, ValidateFrameError};
 use crate::nb_comm::{NbFuture, WriteAll, WriteAndReadResponse};
 use core::convert::TryInto;
 use core::fmt::{self, Display};
+use core::marker::PhantomData;
 use embedded_hal::serial::{Read, Write};
 
 pub mod command;
@@ -59,19 +60,30 @@ lazy_static! {
     static ref GET_FIRMWARE_VERSION: Frame = Command::GetFirmwareVersion.into();
 }
 
-trait FirmwareVersion;
+pub trait CapabilityMarker {}
 
+pub trait ReadCo2AndTemperatureCapability {}
 
+pub struct BaseCapabilities;
+
+impl CapabilityMarker for BaseCapabilities {}
+
+pub struct Firmware5 {}
+
+impl CapabilityMarker for Firmware5 {}
+
+impl ReadCo2AndTemperatureCapability for Firmware5 {}
 
 /// Driver for the MH-Z19C sensor.
 #[derive(Debug)]
-pub struct MhZ19C<'a, U, E, V>
+pub struct MhZ19C<'a, U, E, C>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    V: FimrwareVersion,
+    C: CapabilityMarker,
 {
     state: MhZ19CState<'a, U, E>,
     uart: Option<U>,
+    capability_marker: PhantomData<C>,
 }
 
 #[derive(Debug)]
@@ -86,8 +98,7 @@ where
     SetSelfCalibrate(WriteAll<U, E, Frame>),
 }
 
-pub struct Co2AndTemperature 
-{
+pub struct Co2AndTemperature {
     pub co2_ppm: u16,
     pub temp_celsius: f32,
 }
@@ -101,18 +112,19 @@ where
     }
 }
 
-impl<'a, U, E, V> MhZ19C<'a, U, E, V>
+impl<'a, U, E, C> MhZ19C<'a, U, E, C>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    V: FimrwareVersion,
+    C: CapabilityMarker,
 {
     /// Create a new instance.
     ///
     /// * `uart`: Serial (UART) interface for communication with the sensor.
-    pub fn new(uart: U) -> Self::<_, _, _, _, crate::FirmwareVersion::Unknown> {
-        Self::<_, _, _, _, crate::FirmwareVersion::Unknown> {
+    pub fn new(uart: U) -> Self {
+        Self {
             state: MhZ19CState::default(),
             uart: Some(uart),
+            capability_marker: PhantomData,
         }
     }
 
@@ -162,13 +174,17 @@ where
         }
     }
 
-    pub fn upgrade_to_v5(self) -> nb::Result<MhZ19C<'a, U, E, 5>, Error<E>> {
-        let fw_version = self.get_firmware_version();
+    pub fn upgrade_to_v5(mut self) -> nb::Result<MhZ19C<'a, U, E, Firmware5>, Error<E>> {
+        let fw_version = self.get_firmware_version()?;
 
-        if fw_version[0] >= "5" {
-            return Ok(Self<... sonething that upgrades to v5>);
+        if fw_version[0] >= b'5' {
+            return Ok(MhZ19C {
+                state: self.state,
+                uart: self.uart,
+                capability_marker: PhantomData,
+            });
         } else {
-            return Err("Not the correct version");
+            return Err(nb::Error::Other(Error::NotSupportedByFirmware(fw_version)));
         }
     }
 
@@ -263,10 +279,10 @@ where
     }
 }
 
-impl<'a, U, E, 5> MhZ19C<'a, U, E, 5>
+impl<'a, U, E, C> MhZ19C<'a, U, E, C>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
-    V: FimrwareVersion 
+    C: CapabilityMarker + ReadCo2AndTemperatureCapability,
 {
     pub fn read_co2_ppm_and_temp_celsius(&mut self) -> nb::Result<Co2AndTemperature, Error<E>> {
         loop {
@@ -291,9 +307,13 @@ where
                     .map_err(nb::Error::Other)?;
 
                 let co2_ppm = u16::from_be_bytes(data[2..4].try_into().unwrap());
-                let temp_celsius = f32::from(u16::from_be_bytes(data[..2].try_into().unwrap())) / 100.0;
+                let temp_celsius =
+                    f32::from(u16::from_be_bytes(data[..2].try_into().unwrap())) / 100.0;
 
-                return Ok(Co2AndTemperature { co2_ppm, temp_celsius });
+                return Ok(Co2AndTemperature {
+                    co2_ppm,
+                    temp_celsius,
+                });
             } else {
                 self.recover_uart(state);
             }
@@ -311,6 +331,8 @@ pub enum Error<T> {
     OpCodeMismatch { expected: u8, got: u8 },
     /// Communication error caused by the UART/serial interface.
     UartError(T),
+    /// Cannot upgrade to requested firmware version
+    NotSupportedByFirmware([u8; 4]),
 }
 
 impl<T: Display> Display for Error<T> {
@@ -324,6 +346,13 @@ impl<T: Display> Display for Error<T> {
                 expected, got
             ),
             Self::UartError(err) => write!(f, "UART communication error: {}", err),
+            Self::NotSupportedByFirmware(version) => {
+                write!(
+                    f,
+                    "not supported by firmware version {}",
+                    core::str::from_utf8(version).unwrap_or("<invalid version string>")
+                )
+            }
         }
     }
 }
