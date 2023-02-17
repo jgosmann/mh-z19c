@@ -1,10 +1,8 @@
 [package]
 authors = ["Jan Gosmann <jan@hyper-world.de>"]
-categories = ["embedded"]
 categories = ["embedded", "no-std"]
 description = "Pure rust implementation to read out the Winsen MH-Z19C CO2 sensor."
 edition = "2018"
-keywords = ["CO2", "sensor"]
 keywords = ["CO2", "sensor"]
 license = "MIT OR Apache-2.0"
 name = "mh-z19c"
