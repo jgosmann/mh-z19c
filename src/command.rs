@@ -3,9 +3,12 @@
 /// Commands understood by the MH-Z19C sensor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Read CO₂ concentration and temperature from sensor.
+    /// Requires firmware version 5 or higher.
     ReadCo2AndTemperature,
-    /// Read CO2 concentration from sensor.
+    /// Read CO₂ concentration from sensor.
     ReadCo2,
+    /// Read out the firmware version of the sensor.
     GetFirmwareVersion,
     /// Set self calibration enabled status.
     SetSelfCalibrate(bool),
