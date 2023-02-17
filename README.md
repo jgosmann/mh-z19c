@@ -9,7 +9,7 @@ CO₂ sensor MH-Z19C by Winsen via the serial (UART) interface.
 
 The provided API supports non-blocking usage and is `no_std`.
 
-## Example
+## Examples
 ```rust
 use mh_z19c::MhZ19C;
 use nb::block;
@@ -17,6 +17,14 @@ use nb::block;
 let mut co2sensor = MhZ19C::new(uart);
 let co2 = block!(co2sensor.read_co2_ppm())?;
 println!("CO₂ concentration: {}ppm", co2);
+```
+
+To activate features of a sensor with a firmware of version 5:
+
+```rust
+let mut co2sensor = block!(co2sensor.upgrade_to_v5())?;
+let co2_temp = block!(co2sensor.read_co2_and_temp())?;
+println!("Temperature: {}°C", co2_temp.temp_celsius);
 ```
 
 ## Versioning

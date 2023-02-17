@@ -92,7 +92,10 @@ impl Frame {
         if !self.has_valid_start_byte() {
             Err(ValidateFrameError::InvalidStartByte(self.start_byte()))
         } else if !self.has_valid_checksum() {
-            Err(ValidateFrameError::InvalidChecksum)
+            Err(ValidateFrameError::InvalidChecksum {
+                expected: checksum(&self.0[1..8]),
+                actual: self.checksum(),
+            })
         } else {
             Ok(())
         }
@@ -104,7 +107,7 @@ pub enum ValidateFrameError {
     /// Indicates that the start byte is invalid and provides that invalid byte.
     InvalidStartByte(u8),
     /// Indicates that the checksum is invalid.
-    InvalidChecksum,
+    InvalidChecksum { expected: u8, actual: u8 },
 }
 
 impl Display for ValidateFrameError {
@@ -114,7 +117,11 @@ impl Display for ValidateFrameError {
             InvalidStartByte(got) => {
                 write!(f, "expected start byte 0xff, but got 0x{:x}", got)
             }
-            InvalidChecksum => write!(f, "invalid checksum"),
+            InvalidChecksum { expected, actual } => write!(
+                f,
+                "invalid checksum (got {} instead of {})",
+                expected, actual
+            ),
         }
     }
 }
@@ -163,7 +170,13 @@ mod tests {
     fn test_frame_invalid_checksum() {
         let frame = Frame::new([0xff; 9]);
         assert!(!frame.has_valid_checksum());
-        assert_eq!(frame.validate(), Err(ValidateFrameError::InvalidChecksum));
+        assert_eq!(
+            frame.validate(),
+            Err(ValidateFrameError::InvalidChecksum {
+                expected: 0x07,
+                actual: 0xff,
+            })
+        );
     }
 
     #[test]
