@@ -209,9 +209,9 @@ where
         let fw_version = self.get_firmware_version()?;
 
         if fw_version[1] >= b'5' {
-            return Ok(MhZ19CFw5 { mh_z19c: self });
+            Ok(MhZ19CFw5 { mh_z19c: self })
         } else {
-            return Err(nb::Error::Other(Error::NotSupportedByFirmware(fw_version)));
+            Err(nb::Error::Other(Error::NotSupportedByFirmware(fw_version)))
         }
     }
 
@@ -263,7 +263,7 @@ where
                 let uart = self.uart.take().unwrap();
                 self.state = MhZ19CState::ReadCo2(WriteAndReadResponse::new(
                     uart,
-                    &*READ_CO2.as_ref(),
+                    READ_CO2.as_ref(),
                     [0u8; 9],
                     9,
                 ));
@@ -291,7 +291,7 @@ where
                 let uart = self.uart.take().unwrap();
                 self.state = MhZ19CState::GetFirmwareVersion(WriteAndReadResponse::new(
                     uart,
-                    &*GET_FIRMWARE_VERSION.as_ref(),
+                    GET_FIRMWARE_VERSION.as_ref(),
                     [0u8; 9],
                     9,
                 ));
@@ -398,7 +398,7 @@ where
                 let uart = self.mh_z19c.uart.take().unwrap();
                 self.mh_z19c.state = MhZ19CState::ReadCo2AndTemperature(WriteAndReadResponse::new(
                     uart,
-                    &*READ_CO2_AND_TEMPERATURE.as_ref(),
+                    READ_CO2_AND_TEMPERATURE.as_ref(),
                     [0u8; 9],
                     9,
                 ));
@@ -448,14 +448,13 @@ pub enum Error<T> {
 impl<T: Display> Display for Error<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ValidateFrameError(err) => write!(f, "frame error: {}", err),
+            Self::ValidateFrameError(err) => write!(f, "frame error: {err}"),
             Self::NotAResponse => write!(f, "expected response, but got command"),
             Self::OpCodeMismatch { expected, got } => write!(
                 f,
-                "expected response for op code 0x{:x}, but got op code 0x{:x}",
-                expected, got
+                "expected response for op code 0x{expected:x}, but got op code 0x{got:x}"
             ),
-            Self::UartError(err) => write!(f, "UART communication error: {}", err),
+            Self::UartError(err) => write!(f, "UART communication error: {err}"),
             Self::NotSupportedByFirmware(version) => {
                 write!(
                     f,

@@ -120,7 +120,7 @@ where
     }
 }
 
-impl<'a, R, E, B> NbFuture<(R, B), E> for ReadMultiple<R, E, B>
+impl<R, E, B> NbFuture<(R, B), E> for ReadMultiple<R, E, B>
 where
     R: Read<u8, Error = E>,
     B: AsMut<[u8]>,
@@ -257,7 +257,7 @@ where
     }
 }
 
-impl<'a, U, E, BWrite, BRead> WriteAndReadResponse<U, E, BWrite, BRead>
+impl<U, E, BWrite, BRead> WriteAndReadResponse<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
     BWrite: AsRef<[u8]>,
@@ -279,7 +279,7 @@ where
     }
 }
 
-impl<'a, U, E, BWrite, BRead> NbFuture<(U, BRead), E> for WriteAndReadResponse<U, E, BWrite, BRead>
+impl<U, E, BWrite, BRead> NbFuture<(U, BRead), E> for WriteAndReadResponse<U, E, BWrite, BRead>
 where
     U: Read<u8, Error = E> + Write<u8, Error = E>,
     BWrite: AsRef<[u8]>,
@@ -298,9 +298,7 @@ where
                 return Ok(());
             }
 
-            if let Err(err) = result {
-                return Err(err);
-            }
+            result?;
         }
     }
 

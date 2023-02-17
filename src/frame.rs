@@ -115,13 +115,11 @@ impl Display for ValidateFrameError {
         use ValidateFrameError::*;
         match self {
             InvalidStartByte(got) => {
-                write!(f, "expected start byte 0xff, but got 0x{:x}", got)
+                write!(f, "expected start byte 0xff, but got 0x{got:x}")
             }
-            InvalidChecksum { expected, actual } => write!(
-                f,
-                "invalid checksum (got {} instead of {})",
-                expected, actual
-            ),
+            InvalidChecksum { expected, actual } => {
+                write!(f, "invalid checksum (got {actual} instead of {expected})",)
+            }
         }
     }
 }
