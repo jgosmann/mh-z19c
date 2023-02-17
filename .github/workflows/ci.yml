@@ -43,8 +43,6 @@ jobs:
       - uses: actions/checkout@v3
       - uses: ./.github/actions/setup
 
-      - name: Start required services via `docker compose`
-        run: docker compose up -d
       - name: Run tests
         run: cargo test
 
